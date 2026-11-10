@@ -106,6 +106,14 @@ class AcademicWorkflow:
     def set_meta(self,key,value):
         with self.connection() as db:db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',(key,encoded(value)))
 
+    def delete_meta(self,key):
+        with self.connection() as db:db.execute('DELETE FROM metadata WHERE key=?',(key,))
+
+    def meta_items(self,prefix):
+        with self.connection() as db:
+            rows=db.execute('SELECT key,value FROM metadata WHERE substr(key,1,?)=?',(len(prefix),prefix)).fetchall()
+        return {r['key']:json.loads(r['value']) for r in rows}
+
     def inbox_items(self):
         with self.connection() as db:
             rows=db.execute('SELECT i.*,a.payload AS annotation FROM items i LEFT JOIN annotations a ON a.item_key=i.key AND a.source_revision=i.revision').fetchall()
@@ -284,7 +292,11 @@ class AcademicWorkflow:
             for link in self.preparations():
                 item=current.get(link['item_key'])
                 if not item or item['revision']!=link['revision'] or not link['task_id']:continue
-                if link['error']=='verification_parked':continue
+                if link['error']=='verification_parked' and not link['retry_at']:
+                    # Older installs parked forever; give them the same 24-hour automatic retry.
+                    with self.connection() as db:
+                        db.execute('UPDATE work_links SET retry_at=? WHERE item_key=? AND revision=?',((clock+timedelta(hours=24)).isoformat(),item['key'],item['revision']))
+                    continue
                 if link['retry_at'] and datetime.fromisoformat(link['retry_at'])>clock:continue
                 task=native.get(link['task_id'])
                 if not task or not (task['status'] in {'review','done'} or task['status']=='running' and task.get('assignee')=='academic-validator'):continue
@@ -344,7 +356,7 @@ class AcademicWorkflow:
                         failures=self.get_meta(retry_key,0)+1
                         self.set_meta(retry_key,failures)
                         retry=(clock+timedelta(minutes=15 if failures==1 else 60)).isoformat()
-                        if failures>=3:retry=None
+                        if failures>=3:retry=(clock+timedelta(hours=24)).isoformat()
                         count=link['attempts'] # model/service failures do not consume the one content repair
                     with self.connection() as db:
                         error='verification_parked' if stage!='artifact' and failures>=3 else type(exc).__name__
@@ -425,11 +437,23 @@ class AcademicWorkflow:
                     statuses={r['part']:r['state'] for r in db.execute('SELECT part,state FROM receipts WHERE outbox_key=?',(key,))}
                     state='sent' if all(statuses.get(p)=='sent' for p,_ in parts) else 'partial-unknown' if 'unknown' in statuses.values() else 'failed' if 'failed' in statuses.values() else 'pending'
                     db.execute('UPDATE outbox SET state=? WHERE key=?',(state,key))
-                    if state in {'sent','failed','partial-unknown'}:
+                    # Nothing reached Telegram: the digest may be rebuilt the same day after a backoff.
+                    undelivered=state=='failed' and statuses.get('text')=='failed' and payload.get('type')=='digest'
+                    if state in {'sent','failed','partial-unknown'} and not undelivered:
                         for alert in payload.get('alert_keys',[]):db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('alert:'+alert,encoded(state)))
+                    if state=='sent' and payload.get('type')=='health':
+                        db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('health_alerted',encoded(payload.get('signature',[]))))
                     if state=='sent' and payload.get('type')=='digest':
                         db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('last_digest_fingerprint',encoded(payload['fingerprint'])))
+                        db.execute('DELETE FROM metadata WHERE key=?',('digest_backoff',))
                         for child in payload.get('package_keys',[]):db.execute("UPDATE outbox SET state='sent' WHERE key=?",(child,))
+                    elif undelivered:
+                        row=db.execute('SELECT value FROM metadata WHERE key=?',('digest_backoff',)).fetchone()
+                        failures=(json.loads(row['value']).get('failures',0) if row else 0)+1
+                        until=clock+timedelta(minutes=min(30*2**(failures-1),360))
+                        db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('digest_backoff',encoded(dict(failures=failures,until=until.isoformat()))))
+                        if payload.get('slot'):db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('digest_slot:'+payload['slot'],encoded(None)))
+                        for child in payload.get('package_keys',[]):db.execute("UPDATE outbox SET state='pending' WHERE key=? AND state='bundled'",(child,))
                     elif state in {'failed','partial-unknown'} and payload.get('type')=='digest':
                         db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('last_attempted_fingerprint',encoded(payload['fingerprint'])))
                         for child in payload.get('package_keys',[]):db.execute('UPDATE outbox SET state=? WHERE key=? AND state=\'bundled\'',(state,child))

@@ -3,6 +3,7 @@ from datetime import datetime,timedelta
 from pathlib import Path
 import hashlib
 import json
+import socket
 import urllib.request
 import urllib.error
 from uuid import uuid4
@@ -12,17 +13,20 @@ from operations import export_agenda
 
 
 class TelegramTransport:
-    def __init__(self,config):self.config=config
+    def __init__(self,config):self.config=config;self._credentials=None
 
     def credentials(self):
+        # One tick sends a text and several documents; read secrets and config once.
+        if self._credentials:return self._credentials
         with commander_scope(self.config):
             from agent.secret_scope import get_secret
             import hermes_yaml as yaml
             token=get_secret('TELEGRAM_BOT_TOKEN','')
             cfg=yaml.safe_load((Path(self.config['hermes_root'])/'profiles/commander/config.yaml').read_text(encoding='utf-8'))
-            chat=str(cfg['platforms']['telegram']['home_channel']['chat_id'])
+            chat=str(((cfg.get('platforms') or {}).get('telegram') or {}).get('home_channel',{}).get('chat_id',''))
         if not token or not chat.isdigit():raise ValueError('Commander destination unavailable')
-        return token,chat
+        self._credentials=(token,chat)
+        return self._credentials
 
     def request(self,method,data,content_type='application/json'):
         token,_=self.credentials()
@@ -37,6 +41,10 @@ class TelegramTransport:
                 raise DeliveryRetry(failure.get('parameters',{}).get('retry_after',30)) from None
             if exc.code>=500:raise TimeoutError('Telegram response outcome unknown') from None
             raise ValueError('Telegram rejected delivery') from None
+        except urllib.error.URLError as exc:
+            # DNS failure or a refused connection never reached Telegram: safe to retry.
+            if isinstance(exc.reason,(socket.gaierror,ConnectionRefusedError)):raise DeliveryRetry(60) from None
+            raise TimeoutError('Telegram response outcome unknown') from None
         if result.get('ok') is not True:raise ValueError('Telegram did not confirm request')
         return result['result']
 
@@ -49,7 +57,7 @@ class TelegramTransport:
 
     def send_text(self,text):
         _,chat=self.credentials()
-        result=self.request('sendMessage',json.dumps({'chat_id':chat,'text':text,'disable_web_page_preview':True},ensure_ascii=False).encode('utf-8'))
+        result=self.request('sendMessage',json.dumps({'chat_id':chat,'text':text[:4000],'disable_web_page_preview':True},ensure_ascii=False).encode('utf-8'))
         return {'message_id':str(result['message_id'])}
 
     def send_artifact(self,path,caption):
@@ -65,6 +73,17 @@ class TelegramTransport:
         return {'message_id':str(result['message_id'])}
 
 
+def countdown(due,clock):
+    hours=(due-clock).total_seconds()/3600
+    if hours<0:return '已過期'
+    if hours<24:return '剩 '+str(max(1,int(hours)))+' 小時'
+    return '剩 '+str(int(hours//24))+' 天'
+
+
+def active_window(config,clock):
+    return int(config.get('daily_hour',8))<=clock.hour<int(config.get('followup_until_hour',22))
+
+
 def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     clock=datetime.fromisoformat(iso(now))
     hour=int(config.get('daily_hour',8))
@@ -78,22 +97,30 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     fresh_risk=[x for x in risk if not workflow.get_meta('alert:'+x)]
     urgent=bool(fresh_risk) and (clock.hour>=hour or within_six)
     if not force and clock.hour<hour and not urgent:return {'state':'waiting_daily_window'}
+    backoff=workflow.get_meta('digest_backoff') or {}
+    if not force and backoff.get('until') and datetime.fromisoformat(backoff['until'])>clock:
+        return {'state':'delivery_backoff','until':backoff['until']}
     pending=next((x for x in workflow.publications() if x['payload'].get('type')=='digest' and x['state']=='pending'),None)
     if pending:return {'state':'awaiting_delivery','key':pending['key']}
+    known_packages=[x for x in workflow.publications() if x['payload'].get('type','package')=='package' and current.get(x['item_key'],{}).get('revision')==x['revision']]
+    packages=[x for x in known_packages if x['state']=='pending']
     day=clock.date().isoformat()
     slot=day
+    followup=False
     existing=workflow.get_meta('digest_slot:'+slot)
     if existing and urgent:slot='urgent:'+digest(fresh_risk)
+    elif existing and packages and active_window(config,clock) and workflow.get_meta('followups:'+day,0)<int(config.get('max_followups_per_day',2)):
+        # Materials verified after the daily digest go out the same day instead of waiting a night.
+        slot='materials:'+digest(sorted(x['key'] for x in packages));followup=True
     elif existing:return {'state':'slot_already_prepared','key':existing}
     existing=workflow.get_meta('digest_slot:'+slot)
     if existing:return {'state':'slot_already_prepared','key':existing}
-    known_packages=[x for x in workflow.publications() if x['payload'].get('type','package')=='package' and current.get(x['item_key'],{}).get('revision')==x['revision']]
-    packages=[x for x in known_packages if x['state']=='pending']
     source_health=[(s['source'],s['scope'],bool(s['complete']),s['errors']) for s in workflow.sources()]
     parked=[x['item_key'] for x in workflow.preparations() if current.get(x['item_key'],{}).get('revision')==x['revision'] and (x['error']=='verification_parked' or native and x['task_id'] and (native.get(x['task_id']) or {}).get('status')=='blocked')]
     fingerprint=digest(dict(agenda=[(x['key'],x['revision'],x['human_state']) for x in current.values()],packages=[x['key'] for x in known_packages],risk=risk,source_health=source_health,parked=parked))
     if fingerprint in {workflow.get_meta('last_digest_fingerprint'),workflow.get_meta('last_attempted_fingerprint')}:return {'state':'no_material_change'}
-    if not known_packages and not workflow.get_meta('first_preparation_verified'):return {'state':'waiting_first_verified_preparation'}
+    # Until one preparation is verified the digest waits, but near deadlines are never held back.
+    if not known_packages and not urgent and not workflow.get_meta('first_preparation_verified'):return {'state':'waiting_first_verified_preparation'}
     overview=export_agenda(workflow,now=now,native=native)
     folder=workflow.root/'deliveries'/day/fingerprint[:16];folder.mkdir(parents=True,exist_ok=True)
     durable=folder/'學業總覽.md'
@@ -107,17 +134,27 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     artifacts=list({f['sha256']:f for f in artifacts}.values())
     active=[x for x in current.values() if not x['human_complete'] and x['human_state'] not in {'past_exam','closed'} and not (x['human_state']=='overdue' and x.get('due_at') and datetime.fromisoformat(x['due_at'])<clock-timedelta(days=7))]
     active.sort(key=lambda x:(x.get('confidence')=='needs_check',x.get('due_at') or '9999'))
-    lines=['學業整理已更新。']
-    for item in active[:2]:
-        due=datetime.fromisoformat(item['due_at']).strftime('%m/%d %H:%M') if item.get('due_at') else '期限待確認'
-        lines.append('• '+item.get('course','')+'｜'+item['title']+'：'+due+('，公告日期待核對' if item.get('confidence')=='needs_check' else ''))
+    shown=int(config.get('digest_items',5))
+    lines=['新的學習準備材料已驗證完成。' if followup else '⚠️ 期限將近提醒' if slot.startswith('urgent:') else '學業整理已更新。']
+    for item in active[:shown]:
+        if item.get('due_at'):
+            due_at=datetime.fromisoformat(item['due_at'])
+            due=due_at.strftime('%m/%d %H:%M')+'（'+countdown(due_at,clock)+'）'
+            soon=0<(due_at-clock).total_seconds()<=86400
+        else:due='期限待確認';soon=False
+        lines.append(('‼️ ' if soon else '• ')+item.get('course','')+'｜'+item['title']+'：'+due+('，公告日期待核對' if item.get('confidence')=='needs_check' else ''))
+    if len(active)>shown:lines.append('…另有 '+str(len(active)-shown)+' 項，見附件學業總覽。')
+    for package in packages:
+        payload=package['payload']
+        lines.append('📎 '+payload.get('course','')+'｜'+payload['title']+'：'+str(payload.get('summary',''))[:160])
     if packages:
         lines.append('已附 '+str(len(packages))+' 份驗證過的準備材料；本人作答／實作與提交仍待完成。')
     else:lines.append('完整待辦與查詢限制見附件；準備工作在背景繼續。')
-    partial=[x for x in workflow.sources() if not x['complete']]
+    partial=[x for x in workflow.sources() if not x['complete'] and x['source']!='mail:outlook']
     if partial:lines.append('部分考試／信箱資料涵蓋不完整，附件已標示；不把未查到當作沒有。')
     if parked:lines.append('有 '+str(len(parked))+' 項背景準備已達修復上限，現有材料與限制保留在總覽。')
     key='digest:'+slot+':'+fingerprint
+    if backoff.get('failures'):key+=':retry'+str(backoff['failures']) # the undelivered row stays as history
     payload=dict(type='digest',title='學業總覽與學習準備',message='\n'.join(lines),artifacts=artifacts,
         fingerprint=fingerprint,package_keys=[x['key'] for x in packages],source_versions={k:v['revision'] for k,v in current.items()},slot=slot,alert_keys=risk)
     with workflow.connection() as db:
@@ -127,5 +164,94 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
         if row and json.loads(row['value']):return {'state':'slot_already_prepared','key':json.loads(row['value'])}
         db.execute('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?,?,?)',(key,'',fingerprint,encoded(payload),'pending',clock.isoformat(),None))
         db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('digest_slot:'+slot,encoded(key)))
+        if followup:
+            row=db.execute('SELECT value FROM metadata WHERE key=?',('followups:'+day,)).fetchone()
+            db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('followups:'+day,encoded((json.loads(row['value']) if row else 0)+1)))
         for package in packages:db.execute("UPDATE outbox SET state='bundled' WHERE key=?",(package['key'],))
     return {'state':'prepared','key':key,'packages':len(packages),'artifacts':len(artifacts)}
+
+
+BENIGN_MAIL_ERRORS=('candidate_body_','message_body_excerpt','scan_budget_reached')
+HINTS={
+    'tronclass':'TronClass 讀取失敗；登入可能過期，請在 FJU-TronClass-MCP 重新登入後等待下一輪讀取。',
+    'gmail':'Gmail 讀取失敗；請檢查本機 Gmail 授權與 mail_python 環境。',
+    'interpretation':'公告／信件解析服務連續失敗；請檢查 commander 的模型授權或額度，24 小時後會自動重試。',
+    'verification':'產物驗證服務連續失敗；請檢查 commander 的模型授權或額度，24 小時後會自動重試。',
+    'worker':'背景準備卡因授權或非暫時性錯誤停住；請檢查 hermes-agent 的模型授權，再於看板解除封鎖。',
+}
+
+
+def health_problems(workflow,*,recovery=()):
+    problems={}
+    for source in workflow.sources():
+        if source['source']=='tronclass' and source['scope']=='collector' and not source['complete']:
+            problems['tronclass']=source['errors']
+        if source['source']=='mail:gmail':
+            hard=[e for e in source['errors'] if not str(e).startswith(BENIGN_MAIL_ERRORS)]
+            if hard:problems['gmail']=hard
+    current={x['key']:x['revision'] for x in workflow.agenda()}
+    interpret=[k for k,v in workflow.meta_items('interpret:').items() if isinstance(v,dict) and v.get('parked')]
+    if interpret:problems['interpretation']=[str(len(interpret))+' items']
+    verification=[x for x in workflow.preparations() if x['error']=='verification_parked' and current.get(x['item_key'])==x['revision']]
+    if verification:problems['verification']=[str(len(verification))+' items']
+    stuck=[x['task_id'] for x in recovery if x.get('state') in {'not_retryable','parked'}]
+    if stuck:problems['worker']=stuck
+    return problems
+
+
+def prepare_health(workflow,config,*,now=None,recovery=()):
+    """Queue one Telegram alert when infrastructure stays broken, and one when it recovers."""
+    clock=datetime.fromisoformat(iso(now))
+    threshold=timedelta(minutes=int(config.get('health_alert_after_minutes',120)))
+    problems=health_problems(workflow,recovery=recovery)
+    since=workflow.meta_items('health_since:')
+    for key in since:
+        if key.split(':',1)[1] not in problems:workflow.delete_meta(key)
+    persistent=[]
+    for name in sorted(problems):
+        first=since.get('health_since:'+name)
+        if not first:workflow.set_meta('health_since:'+name,clock.isoformat());first=clock.isoformat()
+        if clock-datetime.fromisoformat(first)>=threshold:persistent.append(name)
+    alerted=workflow.get_meta('health_alerted',[]) or []
+    if persistent==alerted:return {'state':'unchanged','problems':persistent}
+    if not persistent and set(alerted)&set(problems):return {'state':'unchanged','problems':persistent}
+    if not active_window(config,clock):return {'state':'waiting_daily_window','problems':persistent}
+    if any(x['payload'].get('type')=='health' and x['state']=='pending' for x in workflow.publications()):return {'state':'awaiting_delivery'}
+    attempt=workflow.get_meta('health_attempt') or {}
+    if attempt.get('signature')==persistent and clock-datetime.fromisoformat(attempt['at'])<timedelta(hours=6):return {'state':'recently_attempted'}
+    lines=['🩺 小居學業工作流狀態']
+    for name in persistent:lines.append('• '+HINTS[name])
+    resolved=[x for x in alerted if x not in persistent]
+    if resolved:lines.append('已恢復：'+'、'.join({'tronclass':'TronClass','gmail':'Gmail','interpretation':'解析服務','verification':'驗證服務','worker':'背景準備'}.get(x,x) for x in resolved)+'。')
+    if not persistent:lines.append('目前所有來源與服務恢復正常。')
+    key='health:'+digest(persistent)+':'+clock.isoformat()
+    payload=dict(type='health',title='學業工作流狀態',message='\n'.join(lines),artifacts=[],signature=persistent)
+    with workflow.connection() as db:
+        db.execute('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?,?,?)',(key,'','',encoded(payload),'pending',clock.isoformat(),None))
+        db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',('health_attempt',encoded(dict(signature=persistent,at=clock.isoformat()))))
+    return {'state':'prepared','key':key,'problems':persistent}
+
+
+def scheduler_outcome(workflow,config,*,ok,error_type=None,now=None,transport=None):
+    """Tell the owner directly when the scheduler itself keeps crashing; the outbox may be the broken part."""
+    clock=datetime.fromisoformat(iso(now))
+    if ok:
+        failures=workflow.get_meta('scheduler_failure_count',0)
+        workflow.set_meta('scheduler_failure_count',0)
+        alerted=workflow.get_meta('scheduler_alerted_at')
+        if not alerted or not config.get('delivery_enabled'):return {'state':'ok'}
+        try:
+            (transport or TelegramTransport(config)).send_text('✅ 小居學業排程已恢復正常執行。')
+            workflow.delete_meta('scheduler_alerted_at')
+            return {'state':'recovery_sent','failures':failures}
+        except Exception as exc:return {'state':'recovery_unsent','error_type':type(exc).__name__}
+    failures=(workflow.get_meta('scheduler_failure_count',0) or 0)+1
+    workflow.set_meta('scheduler_failure_count',failures)
+    if not config.get('delivery_enabled') or failures<int(config.get('scheduler_alert_after_failures',3)):return {'state':'counted','failures':failures}
+    alerted=workflow.get_meta('scheduler_alerted_at')
+    if alerted and clock-datetime.fromisoformat(alerted)<timedelta(hours=12):return {'state':'already_alerted','failures':failures}
+    try:
+        (transport or TelegramTransport(config)).send_text('⚠️ 小居學業排程已連續 '+str(failures)+' 次失敗（'+str(error_type or 'Error')+'）。\n請在電腦上執行 academic.py doctor 檢查設定；問題排除前不會有新的學業整理。')
+        workflow.set_meta('scheduler_alerted_at',clock.isoformat())
+        return {'state':'alert_sent','failures':failures}
+    except Exception as exc:return {'state':'alert_unsent','failures':failures,'error_type':type(exc).__name__}

@@ -12,7 +12,8 @@ from operations import collect_sources,import_school,import_mail,interpret_pendi
 
 def load(config_path=None):
     path=Path(config_path) if config_path else Path(__file__).with_name('config.json')
-    config=json.loads(path.read_text(encoding='utf-8'))
+    # utf-8-sig: Windows PowerShell 5.1 and some editors save config.json with a BOM.
+    config=json.loads(path.read_text(encoding='utf-8-sig'))
     return config,AcademicWorkflow(config['state_root'])
 
 
@@ -33,6 +34,7 @@ def status(config,workflow):
         sources=workflow.sources(),preparations=[dict(x,native_status=(native.get(x['task_id']) or {}).get('status')) for x in workflow.preparations() if x['task_id']],
         delivery=[dict(key=x['key'],state=x['state'],title=x['payload']['title']) for x in workflow.publications()],
         agenda_path=str(workflow.root/'exports/學業總覽.md'),last_tick=workflow.get_meta('last_tick'),
+        health_alerts=workflow.get_meta('health_alerted',[]),scheduler_failures=workflow.get_meta('scheduler_failure_count',0),
         calendar='local_provisional; authenticated calendar not verified')
 
 
@@ -54,22 +56,74 @@ def tick(config,workflow,*,collect=False):
         result=dict(state='ok',at=iso(),interpretation=interpreted,recovery=recovered,reconciled=reconciled,dispatched=dispatched,agenda_path=str(export))
         # Publishing is enabled only after installation and isolated contract verification.
         if config.get('delivery_enabled'):
-            from publisher import prepare_digest,TelegramTransport
-            digest_result=prepare_digest(workflow,config,native=native)
-            result['digest']=digest_result
-            result['publication']=workflow.publish(TelegramTransport(config),kinds={'digest'})
+            from publisher import prepare_digest,prepare_health,TelegramTransport
+            result['digest']=prepare_digest(workflow,config,native=native)
+            result['health']=prepare_health(workflow,config,recovery=recovered)
+            result['publication']=workflow.publish(TelegramTransport(config),kinds={'digest','health'},limit=2)
         workflow.set_meta('last_tick',result)
         return result
+
+
+def doctor(config,workflow,*,probe=True):
+    """Check every local dependency the scheduler needs and report what to fix."""
+    import subprocess
+    checks=[]
+    def check(name,ok,fix='',required=True):checks.append(dict(name=name,ok=bool(ok),fix='' if ok else fix,required=required))
+    for key in ('hermes_root','hermes_payload','runtime','tronclass_repo','mailbox','mail_python','runtime_python'):
+        value=str(config.get(key,''))
+        check('path:'+key,value and 'path/to' not in value and Path(value).exists(),'在 config.json 把 '+key+' 改成本機實際路徑')
+    root=Path(config.get('hermes_root',''))
+    check('tronclass_python',(Path(config.get('tronclass_repo',''))/'.venv/Scripts/python.exe').is_file(),'在 FJU-TronClass-MCP 建立 .venv 並完成登入')
+    check('kanban_board',(root/'kanban/boards/command-center/kanban.db').is_file(),'執行 hermes kanban boards create command-center')
+    for profile in ('commander','hermes-agent'):
+        path=root/'profiles'/profile/'config.yaml'
+        text=path.read_text(encoding='utf-8') if path.is_file() else ''
+        check('plugin_enabled:'+profile,'user-academic-workflow' in text,'在 profiles/'+profile+'/config.yaml 的 plugins.enabled 加入 user-academic-workflow')
+        check('plugin_installed:'+profile,(root/'profiles'/profile/'plugins/user-academic-workflow/__init__.py').is_file(),'執行 install.py 複製外掛')
+        if profile=='commander':check('cron_timeout','script_timeout_seconds' in text,'在 commander config.yaml 設定 cron.script_timeout_seconds: 1500',required=False)
+    try:
+        subprocess.run([config['runtime_python'],'-c','import pydantic,openai,jiter,psutil'],check=True,capture_output=True,timeout=60,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        check('runtime_modules',True)
+    except Exception:check('runtime_modules',False,'在 runtime_python 安裝 pydantic openai jiter psutil')
+    last=workflow.get_meta('last_tick') or {}
+    fresh=last.get('at') and datetime.fromisoformat(iso())-datetime.fromisoformat(last['at'])<timedelta(minutes=20)
+    check('scheduler_recent',fresh,'排程超過 20 分鐘沒有完成；用 hermes -p commander cron list --all 確認已 resume',required=False)
+    failures=workflow.get_meta('scheduler_failure_count',0) or 0
+    check('scheduler_failures',not failures,'最近排程失敗 '+str(failures)+' 次：'+str((workflow.get_meta('last_scheduler_failure') or {}).get('error_type')),required=False)
+    for source in workflow.sources():
+        if source['scope']=='collector' or source['source']=='mail:gmail':
+            check('source:'+source['source']+':'+source['scope'],source['complete'],'來源錯誤：'+','.join(map(str,source['errors'])),required=False)
+    check('delivery_enabled',config.get('delivery_enabled'),'Telegram 送達尚未啟用；確認 telegram-test 成功後把 delivery_enabled 改為 true',required=False)
+    if probe:
+        try:
+            from publisher import TelegramTransport
+            TelegramTransport(config).probe();check('telegram',True)
+        except Exception as exc:check('telegram',False,'Telegram 無法驗證（'+type(exc).__name__+'）：在 commander 設定 TELEGRAM_BOT_TOKEN 與私人 home_channel.chat_id',required=bool(config.get('delivery_enabled')))
+    return dict(ok=all(c['ok'] for c in checks if c['required']),checks=checks)
+
+
+def telegram_test(config):
+    from publisher import TelegramTransport
+    transport=TelegramTransport(config)
+    identity=transport.probe()
+    receipt=transport.send_text('✅ 小居學業工作流 Telegram 測試訊息。收到這則代表摘要與附件可以送達這個私人對話。')
+    return dict(identity,message_id=receipt['message_id'])
 
 
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     parser=argparse.ArgumentParser()
-    parser.add_argument('action',choices=['status','tick','collect','interpret','dispatch','reconcile','export','submit','import-school','import-mail'])
+    parser.add_argument('action',choices=['status','tick','collect','interpret','dispatch','reconcile','export','submit','import-school','import-mail','doctor','telegram-test'])
     parser.add_argument('--config');parser.add_argument('--file');parser.add_argument('--task-id')
+    parser.add_argument('--no-probe',action='store_true',help='doctor: skip the Telegram API check')
     args=parser.parse_args()
     config,workflow=load(args.config)
     if args.action=='status':result=status(config,workflow)
+    elif args.action=='doctor':
+        result=doctor(config,workflow,probe=not args.no_probe)
+        print(json.dumps(result,ensure_ascii=False,indent=2,default=str))
+        raise SystemExit(0 if result['ok'] else 1)
+    elif args.action=='telegram-test':result=telegram_test(config)
     elif args.action=='submit':result=submit(config,workflow,args.task_id)
     elif args.action=='import-school':import_school(workflow,json.loads(Path(args.file).read_text(encoding='utf-8-sig')));result={'ok':True}
     elif args.action=='import-mail':import_mail(workflow,json.loads(Path(args.file).read_text(encoding='utf-8-sig')));result={'ok':True}

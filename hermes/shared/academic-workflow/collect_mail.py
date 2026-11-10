@@ -29,7 +29,8 @@ def collect(path,header_budget=1000,body_budget=40,course_names=()):
                 text=preview.get('from','')+' '+preview.get('subject','')+' '+preview.get('body','')
                 if re.search(r'fju\.edu\.tw|TronClass|學校|系辦|助教|繳交|作業|期中|期末|課程|實驗報告|專題',text,re.I) or any(name and name in text for name in course_names):
                     candidates.append(row)
-        errors.append('body_only_academic_mail_not_covered')
+        # Body-only academic mail is a fixed scan limitation, reported in coverage rather than as a
+        # failure; otherwise Gmail could never be marked complete and every digest would warn.
         body_reads=0
         for row in reversed(candidates):
             value=mailbox.describe_gmail(row,12000)
@@ -46,7 +47,7 @@ def collect(path,header_budget=1000,body_budget=40,course_names=()):
             else:errors.append('candidate_body_budget_reached')
             messages.append(value)
         return {'gmail':{'messages':messages,'truncated':len(identifiers)>header_budget or len(candidates)>body_budget,
-                         'errors':sorted(set(errors)),'coverage':{'folder':'All Mail','days':30,'matched_headers':len(identifiers),'inspected_headers':len(selected),'academic_candidates':len(candidates),'read_messages':len(messages),'scan':'sender_subject_and_course_names_then_candidate_body','body_prefix_bytes':36000,'header_filter_only':True}},
+                         'errors':sorted(set(errors)),'coverage':{'folder':'All Mail','days':30,'matched_headers':len(identifiers),'inspected_headers':len(selected),'academic_candidates':len(candidates),'read_messages':len(messages),'scan':'sender_subject_and_course_names_then_candidate_body','body_prefix_bytes':36000,'header_filter_only':True,'body_only_mail_may_be_missed':True}},
                 'outlook':{'error':'not_authorized_or_unavailable','messages':[]}}
 
 
