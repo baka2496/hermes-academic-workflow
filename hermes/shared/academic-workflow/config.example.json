@@ -1,0 +1,14 @@
+{
+  "hermes_root": "C:/path/to/hermes-home",
+  "hermes_payload": "C:/path/to/agent-payload",
+  "runtime": "C:/path/to/hermes-home/shared/academic-workflow",
+  "state_root": "C:/path/to/hermes-home/shared/academic-state",
+  "runtime_python": "C:/path/to/runtime-venv/Scripts/python.exe",
+  "tronclass_repo": "C:/path/to/FJU-TronClass-MCP",
+  "mailbox": "C:/path/to/mailbox.py",
+  "mail_python": "C:/path/to/mail-venv/Scripts/python.exe",
+  "collection_minutes": 30,
+  "max_active_preparations": 2,
+  "daily_hour": 8,
+  "delivery_enabled": false
+}

@@ -1,0 +1,9 @@
+name: user-academic-workflow
+version: 1.0.0
+description: 共同學業待辦與自動準備產物交接。
+provides_tools:
+  - academic_workflow
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_llm_call
