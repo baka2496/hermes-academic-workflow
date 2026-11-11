@@ -40,7 +40,8 @@ class TelegramTransport:
             if exc.code==429:
                 raise DeliveryRetry(failure.get('parameters',{}).get('retry_after',30)) from None
             if exc.code>=500:raise TimeoutError('Telegram response outcome unknown') from None
-            raise ValueError('Telegram rejected delivery') from None
+            # Telegram's description never contains the token; keep it so failures can be diagnosed.
+            raise ValueError('Telegram rejected delivery: HTTP '+str(exc.code)+' '+str(failure.get('description',''))[:150]) from None
         except urllib.error.URLError as exc:
             # DNS failure or a refused connection never reached Telegram: safe to retry.
             if isinstance(exc.reason,(socket.gaierror,ConnectionRefusedError)):raise DeliveryRetry(60) from None
@@ -118,7 +119,8 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     source_health=[(s['source'],s['scope'],bool(s['complete']),s['errors']) for s in workflow.sources()]
     parked=[x['item_key'] for x in workflow.preparations() if current.get(x['item_key'],{}).get('revision')==x['revision'] and (x['error']=='verification_parked' or native and x['task_id'] and (native.get(x['task_id']) or {}).get('status')=='blocked')]
     fingerprint=digest(dict(agenda=[(x['key'],x['revision'],x['human_state']) for x in current.values()],packages=[x['key'] for x in known_packages],risk=risk,source_health=source_health,parked=parked))
-    if fingerprint in {workflow.get_meta('last_digest_fingerprint'),workflow.get_meta('last_attempted_fingerprint')}:return {'state':'no_material_change'}
+    # Undelivered verified materials are always news, even if the agenda itself did not change.
+    if not packages and fingerprint in {workflow.get_meta('last_digest_fingerprint'),workflow.get_meta('last_attempted_fingerprint')}:return {'state':'no_material_change'}
     # Until one preparation is verified the digest waits, but near deadlines are never held back.
     if not known_packages and not urgent and not workflow.get_meta('first_preparation_verified'):return {'state':'waiting_first_verified_preparation'}
     overview=export_agenda(workflow,now=now,native=native)
@@ -135,26 +137,27 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     active=[x for x in current.values() if not x['human_complete'] and x['human_state'] not in {'past_exam','closed'} and not (x['human_state']=='overdue' and x.get('due_at') and datetime.fromisoformat(x['due_at'])<clock-timedelta(days=7))]
     active.sort(key=lambda x:(x.get('confidence')=='needs_check',x.get('due_at') or '9999'))
     shown=int(config.get('digest_items',5))
-    lines=['新的學習準備材料已驗證完成。' if followup else '⚠️ 期限將近提醒' if slot.startswith('urgent:') else '學業整理已更新。']
+    lines=['📚 新材料' if followup else '⚠️ 期限將近' if slot.startswith('urgent:') else '📚 今日學業']
     for item in active[:shown]:
+        # Keep the chat message glanceable: one short line per item, details live in the attachments.
         if item.get('due_at'):
             due_at=datetime.fromisoformat(item['due_at'])
-            due=due_at.strftime('%m/%d %H:%M')+'（'+countdown(due_at,clock)+'）'
+            due=due_at.strftime('%m/%d')+' '+countdown(due_at,clock)
             soon=0<(due_at-clock).total_seconds()<=86400
         else:due='期限待確認';soon=False
-        lines.append(('‼️ ' if soon else '• ')+item.get('course','')+'｜'+item['title']+'：'+due+('，公告日期待核對' if item.get('confidence')=='needs_check' else ''))
-    if len(active)>shown:lines.append('…另有 '+str(len(active)-shown)+' 項，見附件學業總覽。')
-    for package in packages:
-        payload=package['payload']
-        lines.append('📎 '+payload.get('course','')+'｜'+payload['title']+'：'+str(payload.get('summary',''))[:160])
-    if packages:
-        lines.append('已附 '+str(len(packages))+' 份驗證過的準備材料；本人作答／實作與提交仍待完成。')
-    else:lines.append('完整待辦與查詢限制見附件；準備工作在背景繼續。')
-    partial=[x for x in workflow.sources() if not x['complete'] and x['source']!='mail:outlook']
-    if partial:lines.append('部分考試／信箱資料涵蓋不完整，附件已標示；不把未查到當作沒有。')
-    if parked:lines.append('有 '+str(len(parked))+' 項背景準備已達修復上限，現有材料與限制保留在總覽。')
+        title=(item.get('course','')[:6]+' '+item['title']).strip()
+        if len(title)>20:title=title[:19]+'…'
+        lines.append(('‼️ ' if soon else '• ')+title+'｜'+due+('?' if item.get('confidence')=='needs_check' and item.get('due_at') else ''))
+    if len(active)>shown:lines.append('＋'+str(len(active)-shown)+' 項見附件')
+    if packages:lines.append('📎 附 '+str(len(packages))+' 份準備材料')
+    notes=[]
+    if any(not x['complete'] and x['source']!='mail:outlook' for x in workflow.sources()):notes.append('部分來源不完整')
+    if parked:notes.append(str(len(parked))+' 項準備卡住')
+    if notes:lines.append('ℹ️ '+'、'.join(notes)+'（詳見附件）')
     key='digest:'+slot+':'+fingerprint
-    if backoff.get('failures'):key+=':retry'+str(backoff['failures']) # the undelivered row stays as history
+    # An undelivered row with the same slot and content stays as history; a retry needs its own key.
+    earlier=sum(1 for x in workflow.publications() if x['key']==key or x['key'].startswith(key+':retry'))
+    if earlier:key+=':retry'+str(earlier)
     payload=dict(type='digest',title='學業總覽與學習準備',message='\n'.join(lines),artifacts=artifacts,
         fingerprint=fingerprint,package_keys=[x['key'] for x in packages],source_versions={k:v['revision'] for k,v in current.items()},slot=slot,alert_keys=risk)
     with workflow.connection() as db:

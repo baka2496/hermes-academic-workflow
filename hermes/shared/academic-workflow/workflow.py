@@ -427,7 +427,7 @@ class AcademicWorkflow:
                         state='retry' if attempts<3 else 'failed'
                         receipt=dict(attempts=attempts,retry_at=(clock+timedelta(seconds=exc.delay)).isoformat(),error_type=type(exc).__name__)
                     except ValueError as exc:
-                        state='failed';receipt=dict(attempts=attempts,error_type=type(exc).__name__)
+                        state='failed';receipt=dict(attempts=attempts,error_type=type(exc).__name__,detail=str(exc)[:200])
                     except Exception as exc:
                         state='unknown';receipt=dict(attempts=attempts,error_type=type(exc).__name__)
                     with self.connection() as db:

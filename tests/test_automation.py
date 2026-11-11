@@ -39,6 +39,17 @@ class DeliveryRecoveryTests(unittest.TestCase):
         self.assertTrue(any('學習材料.md' in x for x in transport.files))
         self.assertIsNone(workflow.get_meta('digest_backoff'))
 
+    def test_retry_gets_a_fresh_key_even_without_backoff_state(self):
+        workflow,native,_=prepared()
+        prepare_digest(workflow,{'daily_hour':8},native=native,now='2026-11-09T08:00:00+08:00')
+        workflow.publish(Rejected(),now='2026-11-09T08:00:00+08:00',kinds={'digest'})
+        workflow.delete_meta('digest_backoff')
+        result=prepare_digest(workflow,{'daily_hour':8},native=native,now='2026-11-09T08:05:00+08:00')
+        self.assertTrue(result['key'].endswith(':retry1'))
+        transport=sent_ok()
+        workflow.publish(transport,now='2026-11-09T08:05:00+08:00',kinds={'digest'})
+        self.assertEqual(len(transport.texts),1)
+
     def test_backoff_grows_and_is_capped(self):
         workflow,native,_=prepared()
         clock='2026-11-09T08:00:00+08:00'
@@ -79,8 +90,8 @@ class DigestContentTests(unittest.TestCase):
         self.assertEqual(result['state'],'prepared')
         self.assertIn(':materials:',result['key'])
         workflow.publish(transport,now='2026-11-09T10:00:00+08:00',kinds={'digest'})
-        self.assertIn('新的學習準備材料',transport.texts[-1])
-        self.assertIn('力學練習已準備',transport.texts[-1])
+        self.assertIn('新材料',transport.texts[-1])
+        self.assertIn('附 1 份',transport.texts[-1])
         self.assertTrue(any('學習材料.md' in x for x in transport.files))
 
     def test_urgent_deadline_is_not_held_back_before_first_verified_preparation(self):
@@ -101,8 +112,9 @@ class DigestContentTests(unittest.TestCase):
         transport=sent_ok()
         workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
         text=transport.texts[0]
-        self.assertEqual(text.count('微積分｜'),5)
-        self.assertIn('另有 2 項',text)
+        self.assertEqual(text.count('習題'),5)
+        self.assertIn('＋2 項',text)
+        self.assertLessEqual(len(text.splitlines()),8)
         self.assertIn('剩 2 天',text)
 
 
@@ -186,6 +198,20 @@ class SelfHealingTests(unittest.TestCase):
         native.get('t_1')['status']='review'
         workflow.reconcile(native,lambda *_:1/0,now='2026-11-09T09:00:00+08:00')
         self.assertEqual(workflow.preparations()[0]['retry_at'],'2026-11-10T09:00:00+08:00')
+
+
+class PayloadTests(unittest.TestCase):
+    def test_app_update_falls_back_to_installed_payload(self):
+        import native
+        root=fixture_root();new=root/'Hermes_2'/'app/resources/agent-payload';(new/'hermes-agent').mkdir(parents=True)
+        stale=str(root/'Hermes_1'/'app/resources/agent-payload')
+        with patch.object(native,'installed_payloads',return_value=[new]):
+            self.assertEqual(native.resolve_payload(stale),new)
+        current=root/'current';(current/'hermes-agent').mkdir(parents=True)
+        with patch.object(native,'installed_payloads',side_effect=AssertionError('no lookup needed')):
+            self.assertEqual(native.resolve_payload(str(current)),current)
+        with patch.object(native,'installed_payloads',return_value=[]):
+            with self.assertRaises(FileNotFoundError):native.resolve_payload(str(root/'missing'))
 
 
 class InstallerTests(unittest.TestCase):

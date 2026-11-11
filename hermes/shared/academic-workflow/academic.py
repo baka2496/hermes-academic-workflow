@@ -69,9 +69,16 @@ def doctor(config,workflow,*,probe=True):
     import subprocess
     checks=[]
     def check(name,ok,fix='',required=True):checks.append(dict(name=name,ok=bool(ok),fix='' if ok else fix,required=required))
-    for key in ('hermes_root','hermes_payload','runtime','tronclass_repo','mailbox','mail_python','runtime_python'):
+    for key in ('hermes_root','runtime','tronclass_repo','mailbox','mail_python','runtime_python'):
         value=str(config.get(key,''))
         check('path:'+key,value and 'path/to' not in value and Path(value).exists(),'在 config.json 把 '+key+' 改成本機實際路徑')
+    from native import resolve_payload
+    try:
+        payload=resolve_payload(str(config.get('hermes_payload','')))
+        check('hermes_payload',True)
+        check('hermes_payload_current',Path(str(config.get('hermes_payload','')))==payload,
+            'Hermes App 已更新，目前自動改用 '+payload.as_posix()+'；可把 config.json 的 hermes_payload 改成這個路徑',required=False)
+    except FileNotFoundError:check('hermes_payload',False,'找不到 Hermes 桌面版的 agent-payload；在 config.json 設定 hermes_payload')
     root=Path(config.get('hermes_root',''))
     check('tronclass_python',(Path(config.get('tronclass_repo',''))/'.venv/Scripts/python.exe').is_file(),'在 FJU-TronClass-MCP 建立 .venv 並完成登入')
     check('kanban_board',(root/'kanban/boards/command-center/kanban.db').is_file(),'執行 hermes kanban boards create command-center')
