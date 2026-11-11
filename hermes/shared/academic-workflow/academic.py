@@ -71,6 +71,25 @@ def tick(config,workflow,*,collect=False):
         return result
 
 
+# Phrases that ask for tables; the replacement rule ("不要用表格、│ 分欄…") must not match.
+TABLE_INSTRUCTION=r'[以用]三個反引號包住|反引號包住等寬|[使以]用? ?│ ?分欄|偏好少字和表格|一張小表'
+
+
+def table_instructions(root):
+    """Personality files that tell a bot to answer Telegram with tables (unreadable on a phone)."""
+    import re
+    def telegram_bot(profile):
+        try:return any(line.startswith('TELEGRAM_BOT_TOKEN=') for line in (profile/'.env').read_text(encoding='utf-8').splitlines())
+        except OSError:return False
+    found=[]
+    # The root SOUL.md is the template new bots start from, so it is checked too.
+    for soul in [Path(root)/'SOUL.md']+sorted(p/'SOUL.md' for p in Path(root).glob('profiles/*') if telegram_bot(p)):
+        try:text=soul.read_text(encoding='utf-8')
+        except OSError:continue
+        if re.search(TABLE_INSTRUCTION,text):found.append(soul.relative_to(root).as_posix())
+    return found
+
+
 def doctor(config,workflow,*,probe=True):
     """Check every local dependency the scheduler needs and report what to fix."""
     import subprocess
@@ -95,6 +114,8 @@ def doctor(config,workflow,*,probe=True):
         check('plugin_enabled:'+profile,'user-academic-workflow' in text,'在 profiles/'+profile+'/config.yaml 的 plugins.enabled 加入 user-academic-workflow')
         check('plugin_installed:'+profile,(root/'profiles'/profile/'plugins/user-academic-workflow/__init__.py').is_file(),'執行 install.py 複製外掛')
         if profile=='commander':check('cron_timeout','script_timeout_seconds' in text,'在 commander config.yaml 設定 cron.script_timeout_seconds: 1500',required=False)
+    for soul in table_instructions(root):
+        check('phone_format:'+soul,False,soul+' 要求 Telegram 用表格或程式碼區塊；手機上會折行變亂，改成每項一行的短條列',required=False)
     try:
         subprocess.run([config['runtime_python'],'-c','import pydantic,openai,jiter,psutil'],check=True,capture_output=True,timeout=60,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         check('runtime_modules',True)

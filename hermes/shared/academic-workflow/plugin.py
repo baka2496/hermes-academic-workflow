@@ -12,6 +12,12 @@ from academic import load,status,submit
 from native import NativeTasks
 
 
+ACADEMIC_TOPIC=r'學業|作業|考試|複習|讀書|課程|待辦|最近有什麼|有什麼事|重要的事|期限|截止'
+# The owner reads Telegram on a phone: tables and code blocks wrap into an unreadable block there.
+PHONE_FORMAT=('\n手機排版：不要用表格、│ 分欄或三個反引號；一句結論後每項一行「項目｜日期」，下一步最多 4 字，'
+              '整行 18 字內避免折行，最多五項。')
+
+
 def current_tool_identity():
     try:
         context=import_module('tools.approval_context')
@@ -50,9 +56,11 @@ def register(ctx):
                 if key[0]==session_id or now-human_turns[key][1]>21600:human_turns.pop(key,None)
             if human:human_turns[(session_id,turn_id)]=(user_message,now)
             while len(human_turns)>256:human_turns.popitem(last=False)
-        if re.search(r'學業|作業|考試|複習|讀書|課程|待辦',str(user_message)):
+        if re.search(ACADEMIC_TOPIC,str(user_message)):
             agenda=workflow.agenda()
-            return {'context':'學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項；需要資料時用 action=status。'}
+            context='學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項；需要資料時用 action=status。'
+            if getattr(platform,'value',platform)=='telegram':context+=PHONE_FORMAT
+            return {'context':context}
         return None
     def handler(args,session_id='',**kwargs):
         try:

@@ -101,7 +101,7 @@ class DigestContentTests(unittest.TestCase):
         self.assertEqual(result['state'],'prepared')
         transport=sent_ok()
         workflow.publish(transport,now='2026-11-09T09:00:00+08:00',kinds={'digest'})
-        self.assertIn('剩 3 小時',transport.texts[0])
+        self.assertIn('（3小時）',transport.texts[0])
 
     def test_digest_lists_more_items_with_countdown(self):
         workflow=AcademicWorkflow(fixture_root())
@@ -115,7 +115,7 @@ class DigestContentTests(unittest.TestCase):
         self.assertEqual(text.count('習題'),5)
         self.assertIn('＋2 項',text)
         self.assertLessEqual(len(text.splitlines()),8)
-        self.assertIn('剩 2 天',text)
+        self.assertIn('（2天）',text)
 
 
 class HealthTests(unittest.TestCase):
@@ -198,6 +198,51 @@ class SelfHealingTests(unittest.TestCase):
         native.get('t_1')['status']='review'
         workflow.reconcile(native,lambda *_:1/0,now='2026-11-09T09:00:00+08:00')
         self.assertEqual(workflow.preparations()[0]['retry_at'],'2026-11-10T09:00:00+08:00')
+
+
+def phone_width(line):
+    # Chinese and full-width characters take a whole cell on the phone; digits and latin about half.
+    return sum(1 if ord(c)>=0x2E80 else 0.55 for c in line)
+
+
+class PhoneDisplayTests(unittest.TestCase):
+    # The owner reads every bot on an iPhone; tables and code blocks wrap into an unreadable block.
+    PHONE_LINE=21 # characters per line in the owner's Telegram screenshot
+
+    def test_digest_has_no_tables_and_every_line_fits_two_phone_lines(self):
+        workflow=AcademicWorkflow(fixture_root());workflow.set_meta('first_preparation_verified',True)
+        items=[dict(id='h'+str(n),kind='homework',title='非常長的作業標題用來測試手機寬度第'+str(n)+'份',course='國際關係與亞太局勢',
+            due_at='2026-11-1'+str(n)+'T23:59:00+08:00',submitted=False,closed=False) for n in range(1,8)]
+        workflow.ingest('tronclass','homework',items,complete=True)
+        prepare_digest(workflow,{'daily_hour':8},now='2026-11-09T08:00:00+08:00')
+        transport=sent_ok();workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
+        text=transport.texts[0]
+        for bad in ('```','│','|---'):self.assertNotIn(bad,text)
+        for line in text.splitlines():self.assertLessEqual(phone_width(line),self.PHONE_LINE,line)
+
+    def test_long_course_and_title_are_cut_cleanly(self):
+        from publisher import phone_name
+        self.assertEqual(phone_name('作業系統','作業3'),'作業系統 作業3')
+        self.assertEqual(phone_name('量子物理(一)','請各位同學先閱讀這篇長文'),'請各位同學先閱讀…')
+        self.assertEqual(phone_name('固態物理導論','【期中考座位】'),'期中考座位')
+
+    def test_telegram_academic_question_gets_phone_format_rule(self):
+        import plugin
+        ctx=type('Ctx',(),{'hooks':{},'register_hook':lambda s,n,h:s.hooks.__setitem__(n,h),'register_tool':lambda s,**k:None})()
+        workflow=AcademicWorkflow(fixture_root())
+        with patch.object(plugin,'load',return_value=({},workflow)):plugin.register(ctx)
+        hook=ctx.hooks['pre_llm_call']
+        self.assertIn('不要用表格',hook(platform='telegram',user_message='最近有什麼事情')['context'])
+        self.assertNotIn('不要用表格',hook(platform='cli',user_message='最近有什麼事情')['context'])
+
+    def test_doctor_flags_personality_files_that_ask_for_tables(self):
+        import academic
+        root=fixture_root()
+        old='- Telegram 表格以三個反引號包住等寬純文字，使用 │ 分欄'
+        for name,soul,bot in [('a',old,True),('b','- Telegram 手機排版：不要用表格、│ 分欄或三個反引號的程式碼區塊',True),('no-bot',old,False)]:
+            (root/'profiles'/name).mkdir(parents=True);(root/'profiles'/name/'SOUL.md').write_text(soul,encoding='utf-8')
+            if bot:(root/'profiles'/name/'.env').write_text('TELEGRAM_BOT_TOKEN=x\n',encoding='utf-8')
+        self.assertEqual(academic.table_instructions(root),['profiles/a/SOUL.md'])
 
 
 class PreparationOffTests(unittest.TestCase):
