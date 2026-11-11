@@ -9,12 +9,41 @@ import sys
 import time
 
 
+_PAYLOAD_CACHE={}
+
+
+def installed_payloads():
+    """agent-payload folders of the installed Hermes desktop app, newest package first."""
+    import subprocess
+    try:
+        out=subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',
+            '(Get-AppxPackage -Name NousResearchInc.HermesAgent | Sort-Object Version -Descending).InstallLocation'],
+            capture_output=True,text=True,timeout=60,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)).stdout
+    except Exception:return []
+    return [Path(line.strip())/'app/resources/agent-payload' for line in out.splitlines() if line.strip()]
+
+
+def resolve_payload(configured):
+    # The Store app's folder name carries its version, so every app update moves the payload.
+    # Fall back to the installed package instead of failing every scheduled run.
+    if configured in _PAYLOAD_CACHE:return _PAYLOAD_CACHE[configured]
+    def candidates():
+        yield Path(configured)
+        yield from installed_payloads() # only queried when the configured path is gone
+    for candidate in candidates():
+        if (candidate/'hermes-agent').is_dir():
+            _PAYLOAD_CACHE[configured]=candidate
+            return candidate
+    raise FileNotFoundError('Hermes agent-payload not found; set hermes_payload in config.json')
+
+
 def bootstrap(config):
     # Resolve extension modules from this interpreter before Hermes exposes its bundled site path.
     import pydantic,pydantic_core,openai,jiter,psutil
-    payload=Path(config['hermes_payload'])
-    sys.path[:0]=[str(payload/'hermes-agent')]
-    sys.path.append(str(payload/'venv/Lib/site-packages'))
+    payload=resolve_payload(config['hermes_payload'])
+    agent,site=str(payload/'hermes-agent'),str(payload/'venv/Lib/site-packages')
+    if agent not in sys.path:sys.path.insert(0,agent)
+    if site not in sys.path:sys.path.append(site)
 
 
 @contextmanager
