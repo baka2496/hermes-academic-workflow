@@ -80,6 +80,8 @@ hermes -p commander cron create '*/5 * * * *' --name '小居學業工作流' `
 | TronClass／Gmail 讀取失敗、解析或驗證服務停擺、準備卡因授權停住 | 持續超過 `health_alert_after_minutes`（預設 120 分鐘）後，在白天時段送一則狀態通知並附修正方式；恢復後再通知一次。 |
 | 排程本身連續失敗 `scheduler_alert_after_failures` 次 | 直接送 Telegram 警示，12 小時內不重複；恢復後通知。 |
 | 解析或驗證服務重試達上限 | 停放 24 小時後自動再試，不用手動恢復。 |
+| 不需要自動學習材料 | 把 `preparation_enabled` 設為 `false`：不再開準備卡、不再驗證，摘要與總覽也不提材料；讀取來源、每日摘要和期限提醒照常。已做好的材料保留。 |
+| 某個模型額度用完 | 解析與驗證依序改用 `verification_model`（若有設定）、`commander` 的主模型與 `fallback_model`。準備卡預設使用 `hermes-agent` 自己的模型順序；`preparation_model` 只在需要固定模型時設定。 |
 
 ## 執行測試
 

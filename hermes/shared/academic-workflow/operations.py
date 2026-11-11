@@ -176,7 +176,10 @@ def verify_with(model):
     return verify
 
 
-def export_agenda(workflow,*,now=None,native=None):
+NO_MATERIAL_ACTIONS={'先閱讀準備材料，再完成本人作答／實作':'完成作答／實作並提交','使用複習材料練習；本人參加考試':'複習並參加考試'}
+
+
+def export_agenda(workflow,*,now=None,native=None,preparation=True):
     clock=iso(now);directory=workflow.root/'exports';directory.mkdir(parents=True,exist_ok=True)
     items=workflow.agenda(now=now);sources=workflow.sources()
     moment=datetime.fromisoformat(clock)
@@ -192,7 +195,9 @@ def export_agenda(workflow,*,now=None,native=None):
         title=(item.get('course','')+'／'+item['title']).replace('|','／').replace('\n',' ')
         if item.get('url'):title='['+title+']('+item['url']+')'
         state={'open':'待處理','overdue':'期限已過，確認補救方式'}.get(item['human_state'],'待核對')
-        lines.append('| '+title+' | '+due+' | '+state+' | '+cell(item['next_action'])+' |')
+        action=item['next_action']
+        if not preparation:action=NO_MATERIAL_ACTIONS.get(action,action) # never point to materials that are not made
+        lines.append('| '+title+' | '+due+' | '+state+' | '+cell(action)+' |')
     if not active:lines.append('| 目前沒有已確認的未完成項目 | — | 以查詢範圍為準 | 查看下方來源限制 |')
     lines+=['','## 準備與時程','',
         '先處理最近的已確認考試與作業。開始日暫估為截止前兩天；尚未核對課表與私人日曆空檔，這是建議，沒有替你預約時間。','']
@@ -216,10 +221,10 @@ def export_agenda(workflow,*,now=None,native=None):
         if coverage.get('body_prefix_bytes'):lines.append('  先依寄件者、主旨、課名篩選，再補讀候選信的內文。單封最多讀取 '+str(coverage['body_prefix_bytes'])+' bytes 的 MIME 前段；只在內文或附件才提及課業的信件可能漏列。')
     if any(s['scope']=='collector' and not s['complete'] for s in sources):lines.append('- 最新學校連線失敗，表中保留前次資料，沒有把舊項目當成已完成。')
     lines.append('- 學業期限.ics 是本機產生的暫定清單，尚未寫入 Google／Outlook 日曆。')
-    lines+=['','## 已準備的材料','']
+    if preparation:lines+=['','## 已準備的材料','']
     current={x['key']:x for x in items}
     publication_states={(p['item_key'],p['revision']):p['state'] for p in workflow.publications() if p['item_key']}
-    for link in workflow.preparations():
+    for link in (workflow.preparations() if preparation else []):
         item=current.get(link['item_key'])
         if not item or item['revision']!=link['revision']:continue
         state=(native.get(link['task_id']) or {}).get('status','unknown') if native and link['task_id'] else '尚未接線'
@@ -229,7 +234,9 @@ def export_agenda(workflow,*,now=None,native=None):
     if historical:
         lines+=['','## 過期／已關閉項目','', '這些項目保留供核對，不推定你已經參加、完成或提交。','']
         for item in historical:lines.append('- '+cell(item.get('course'))+'／'+cell(item['title'])+'：'+date(item.get('due_at'))+'；'+{'past_exam':'考試時間已過','closed':'來源標示已關閉','overdue':'期限已過'}.get(item['human_state'],'待核對')+'。')
-    lines+=['','## 自動處理方式','','```mermaid','flowchart LR','  A[課程與學業信件] --> B[共同待辦與期限]','  B --> C[背景準備材料]','  C --> D[獨立驗證]','  D --> E[小居彙整與送達確認]','  E --> F[本人學習 實作 考試 提交]','```','', '同一項目更新沿用同一張工作卡。驗證最多退回一次；通知以每日摘要為主，已確認期限將近才增加有限提醒。']
+    if preparation:
+        lines+=['','## 自動處理方式','','```mermaid','flowchart LR','  A[課程與學業信件] --> B[共同待辦與期限]','  B --> C[背景準備材料]','  C --> D[獨立驗證]','  D --> E[小居彙整與送達確認]','  E --> F[本人學習 實作 考試 提交]','```','', '同一項目更新沿用同一張工作卡。驗證最多退回一次；通知以每日摘要為主，已確認期限將近才增加有限提醒。']
+    else:lines+=['','## 自動處理方式','','課程與學業信件整理成同一份待辦與期限；通知以每日摘要為主，已確認期限將近才增加有限提醒。']
     path=directory/'學業總覽.md';path.write_text('\n'.join(lines)+'\n',encoding='utf-8')
     calendar=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Xiaoju//Academic Workflow//ZH-TW','CALSCALE:GREGORIAN']
     for item in active:
