@@ -10,6 +10,10 @@ from native import NativeTasks,Model,commander_scope
 from operations import collect_sources,import_school,import_mail,interpret_pending,verify_with,export_agenda
 
 
+def preparing(config):
+    return config.get('preparation_enabled',True) is not False
+
+
 def load(config_path=None):
     path=Path(config_path) if config_path else Path(__file__).with_name('config.json')
     # utf-8-sig: Windows PowerShell 5.1 and some editors save config.json with a BOM.
@@ -49,10 +53,13 @@ def tick(config,workflow,*,collect=False):
         if collect or due:collect_sources(workflow,config)
         model=Model(config);native=NativeTasks(config)
         interpreted=interpret_pending(workflow,model)
-        recovered=workflow.recover_workers(native)
-        reconciled=workflow.reconcile(native,verify_with(model))
-        dispatched=workflow.dispatch(native,limit=config.get('max_active_preparations',2))
-        export=export_agenda(workflow,native=native)
+        # Automatic study materials are optional; when off, no cards are opened or verified.
+        if preparing(config):
+            recovered=workflow.recover_workers(native)
+            reconciled=workflow.reconcile(native,verify_with(model))
+            dispatched=workflow.dispatch(native,limit=config.get('max_active_preparations',2))
+        else:recovered=reconciled=dispatched=[]
+        export=export_agenda(workflow,native=native,preparation=preparing(config))
         result=dict(state='ok',at=iso(),interpretation=interpreted,recovery=recovered,reconciled=reconciled,dispatched=dispatched,agenda_path=str(export))
         # Publishing is enabled only after installation and isolated contract verification.
         if config.get('delivery_enabled'):

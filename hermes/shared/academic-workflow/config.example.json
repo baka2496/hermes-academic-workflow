@@ -15,5 +15,10 @@
   "digest_items": 5,
   "health_alert_after_minutes": 120,
   "scheduler_alert_after_failures": 3,
+  "preparation_enabled": true,
+  "verification_model": "",
+  "verification_provider": "",
+  "preparation_model": "",
+  "preparation_provider": "",
   "delivery_enabled": false
 }

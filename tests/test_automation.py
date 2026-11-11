@@ -200,6 +200,63 @@ class SelfHealingTests(unittest.TestCase):
         self.assertEqual(workflow.preparations()[0]['retry_at'],'2026-11-10T09:00:00+08:00')
 
 
+class PreparationOffTests(unittest.TestCase):
+    def test_digest_and_overview_never_mention_materials_when_off(self):
+        workflow,native,_=prepared()
+        with workflow.connection() as db:db.execute('DELETE FROM outbox');db.execute("UPDATE work_links SET error='verification_parked'")
+        workflow.delete_meta('first_preparation_verified')
+        config={'daily_hour':8,'preparation_enabled':False}
+        result=prepare_digest(workflow,config,native=native,now='2026-11-09T08:00:00+08:00')
+        self.assertEqual(result['state'],'prepared')
+        transport=sent_ok();workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
+        self.assertNotIn('卡住',transport.texts[0]);self.assertNotIn('材料',transport.texts[0])
+        overview=(workflow.root/'exports/學業總覽.md').read_text(encoding='utf-8')
+        self.assertNotIn('已準備的材料',overview);self.assertNotIn('準備材料',overview)
+        self.assertIn('完成作答／實作並提交',overview)
+
+    def test_tick_opens_no_cards_when_off(self):
+        import academic,contextlib,types
+        workflow=AcademicWorkflow(fixture_root())
+        workflow.ingest('tronclass','homework',[dict(id='h1',kind='homework',title='習題',due_at='2026-12-01T23:59:00+08:00',submitted=False)],complete=True)
+        workflow.set_meta('last_collection_at','2099-01-01T00:00:00+08:00')
+        native=NativeTasks()
+        estop=types.ModuleType('agent.estop');estop.is_engaged=lambda:False
+        with patch.dict(sys.modules,{'agent':types.ModuleType('agent'),'agent.estop':estop}), \
+             patch.object(academic,'commander_scope',lambda c:contextlib.nullcontext()), \
+             patch.object(academic,'NativeTasks',lambda c:native),patch.object(academic,'Model',lambda c:None), \
+             patch.object(academic,'interpret_pending',lambda w,m:{'processed':0}):
+            result=academic.tick({'preparation_enabled':False},workflow)
+            self.assertEqual((result['dispatched'],native.created),([],0))
+            academic.tick({},workflow)
+        self.assertEqual(native.created,1)
+
+
+class ModelChainTests(unittest.TestCase):
+    profile={'model':{'default':'claude-sonnet-5-5-medium','provider':'antigravity-oauth','base_url':'agy://local'},
+        'fallback_model':[{'provider':'antigravity-oauth','model':'gemini-3.8-flash-medium','base_url':'agy://local'},
+                          {'provider':'antigravity-oauth','model':'gemini-4-argon-medium','base_url':'agy://local'}]}
+
+    def test_verification_tries_its_own_provider_then_the_commander_chain(self):
+        from native import model_chain
+        chain=model_chain({'verification_model':'gpt-6.1-sol','verification_provider':'openai-codex'},self.profile,verification=True)
+        self.assertEqual([(x['provider'],x['model']) for x in chain],[('openai-codex','gpt-6.1-sol'),
+            ('antigravity-oauth','claude-sonnet-5-5-medium'),('antigravity-oauth','gemini-3.8-flash-medium'),('antigravity-oauth','gemini-4-argon-medium')])
+        self.assertIsNone(chain[0]['base_url'])
+        self.assertEqual(len(model_chain({'verification_model':'gpt-6.1-sol'},self.profile)),3)
+
+    def test_exhausted_quota_moves_to_the_next_model(self):
+        from native import model_chain,first_answer
+        tried=[]
+        def call(entry):
+            tried.append(entry['model'])
+            if entry['model']!='gemini-3.8-flash-medium':raise RuntimeError('Individual quota reached')
+            return 'answer'
+        self.assertEqual(first_answer(model_chain({},self.profile),call),'answer')
+        self.assertEqual(tried,['claude-sonnet-5-5-medium','gemini-3.8-flash-medium'])
+        with self.assertRaises(RuntimeError) as caught:first_answer(model_chain({},self.profile),lambda e:1/0)
+        self.assertIn('gemini-4-argon-medium',str(caught.exception))
+
+
 class PayloadTests(unittest.TestCase):
     def test_app_update_falls_back_to_installed_payload(self):
         import native
