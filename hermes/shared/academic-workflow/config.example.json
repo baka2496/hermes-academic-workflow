@@ -10,5 +10,10 @@
   "collection_minutes": 30,
   "max_active_preparations": 2,
   "daily_hour": 8,
+  "followup_until_hour": 22,
+  "max_followups_per_day": 2,
+  "digest_items": 5,
+  "health_alert_after_minutes": 120,
+  "scheduler_alert_after_failures": 3,
   "delivery_enabled": false
 }

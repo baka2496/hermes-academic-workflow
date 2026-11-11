@@ -95,7 +95,8 @@ def interpret_pending(workflow,model,*,now=None,batch_size=8):
     ready=[]
     for item in pending:
         retry=workflow.get_meta('interpret:'+item['key']+':'+item['source_revision'],{})
-        if retry.get('parked'):continue
+        # Parked items get one automatic retry per day instead of staying hidden forever.
+        if retry.get('parked') and (not retry.get('at') or datetime.fromisoformat(clock)-datetime.fromisoformat(retry['at'])<timedelta(hours=24)):continue
         if retry.get('retry_at') and datetime.fromisoformat(retry['retry_at'])>datetime.fromisoformat(clock):continue
         ready.append(item)
     pending=ready[:batch_size]
