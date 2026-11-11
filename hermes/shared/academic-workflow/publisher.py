@@ -117,13 +117,14 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     existing=workflow.get_meta('digest_slot:'+slot)
     if existing:return {'state':'slot_already_prepared','key':existing}
     source_health=[(s['source'],s['scope'],bool(s['complete']),s['errors']) for s in workflow.sources()]
-    parked=[x['item_key'] for x in workflow.preparations() if current.get(x['item_key'],{}).get('revision')==x['revision'] and (x['error']=='verification_parked' or native and x['task_id'] and (native.get(x['task_id']) or {}).get('status')=='blocked')]
+    preparation=config.get('preparation_enabled',True) is not False
+    parked=[] if not preparation else [x['item_key'] for x in workflow.preparations() if current.get(x['item_key'],{}).get('revision')==x['revision'] and (x['error']=='verification_parked' or native and x['task_id'] and (native.get(x['task_id']) or {}).get('status')=='blocked')]
     fingerprint=digest(dict(agenda=[(x['key'],x['revision'],x['human_state']) for x in current.values()],packages=[x['key'] for x in known_packages],risk=risk,source_health=source_health,parked=parked))
     # Undelivered verified materials are always news, even if the agenda itself did not change.
     if not packages and fingerprint in {workflow.get_meta('last_digest_fingerprint'),workflow.get_meta('last_attempted_fingerprint')}:return {'state':'no_material_change'}
     # Until one preparation is verified the digest waits, but near deadlines are never held back.
-    if not known_packages and not urgent and not workflow.get_meta('first_preparation_verified'):return {'state':'waiting_first_verified_preparation'}
-    overview=export_agenda(workflow,now=now,native=native)
+    if preparation and not known_packages and not urgent and not workflow.get_meta('first_preparation_verified'):return {'state':'waiting_first_verified_preparation'}
+    overview=export_agenda(workflow,now=now,native=native,preparation=preparation)
     folder=workflow.root/'deliveries'/day/fingerprint[:16];folder.mkdir(parents=True,exist_ok=True)
     durable=folder/'學業總覽.md'
     try:
@@ -184,7 +185,7 @@ HINTS={
 }
 
 
-def health_problems(workflow,*,recovery=()):
+def health_problems(workflow,*,recovery=(),preparation=True):
     problems={}
     for source in workflow.sources():
         if source['source']=='tronclass' and source['scope']=='collector' and not source['complete']:
@@ -195,7 +196,7 @@ def health_problems(workflow,*,recovery=()):
     current={x['key']:x['revision'] for x in workflow.agenda()}
     interpret=[k for k,v in workflow.meta_items('interpret:').items() if isinstance(v,dict) and v.get('parked')]
     if interpret:problems['interpretation']=[str(len(interpret))+' items']
-    verification=[x for x in workflow.preparations() if x['error']=='verification_parked' and current.get(x['item_key'])==x['revision']]
+    verification=[x for x in workflow.preparations() if preparation and x['error']=='verification_parked' and current.get(x['item_key'])==x['revision']]
     if verification:problems['verification']=[str(len(verification))+' items']
     stuck=[x['task_id'] for x in recovery if x.get('state') in {'not_retryable','parked'}]
     if stuck:problems['worker']=stuck
@@ -206,7 +207,7 @@ def prepare_health(workflow,config,*,now=None,recovery=()):
     """Queue one Telegram alert when infrastructure stays broken, and one when it recovers."""
     clock=datetime.fromisoformat(iso(now))
     threshold=timedelta(minutes=int(config.get('health_alert_after_minutes',120)))
-    problems=health_problems(workflow,recovery=recovery)
+    problems=health_problems(workflow,recovery=recovery,preparation=config.get('preparation_enabled',True) is not False)
     since=workflow.meta_items('health_since:')
     for key in since:
         if key.split(':',1)[1] not in problems:workflow.delete_meta(key)
