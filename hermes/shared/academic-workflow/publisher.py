@@ -77,8 +77,21 @@ class TelegramTransport:
 def countdown(due,clock):
     hours=(due-clock).total_seconds()/3600
     if hours<0:return '已過期'
-    if hours<24:return '剩 '+str(max(1,int(hours)))+' 小時'
-    return '剩 '+str(int(hours//24))+' 天'
+    if hours<24:return str(max(1,int(hours)))+'小時'
+    return str(int(hours//24))+'天'
+
+
+PHONE_LINE=21 # characters per line in the owner's iPhone Telegram
+NAME_WIDTH=9  # leaves room for "• " and "｜11/18（49天）" on one phone line
+
+
+def phone_name(course,title):
+    """Shortest useful label: course + title when it fits, else the title, cut cleanly."""
+    import re
+    title=re.sub(r'[【】\[\]「」]','',title).strip()
+    course=re.sub(r'[（(][^）)]*[）)]?$','',course or '').strip() # drop "(一)" style suffixes
+    if course and len(course)+1+len(title)<=NAME_WIDTH:return course+' '+title
+    return title if len(title)<=NAME_WIDTH else title[:NAME_WIDTH-1]+'…'
 
 
 def active_window(config,clock):
@@ -143,12 +156,10 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
         # Keep the chat message glanceable: one short line per item, details live in the attachments.
         if item.get('due_at'):
             due_at=datetime.fromisoformat(item['due_at'])
-            due=due_at.strftime('%m/%d')+' '+countdown(due_at,clock)
+            due=due_at.strftime('%m/%d')+'（'+countdown(due_at,clock)+('?' if item.get('confidence')=='needs_check' else '')+'）'
             soon=0<(due_at-clock).total_seconds()<=86400
-        else:due='期限待確認';soon=False
-        title=(item.get('course','')[:6]+' '+item['title']).strip()
-        if len(title)>20:title=title[:19]+'…'
-        lines.append(('‼️ ' if soon else '• ')+title+'｜'+due+('?' if item.get('confidence')=='needs_check' and item.get('due_at') else ''))
+        else:due='日期待確認';soon=False
+        lines.append(('‼️' if soon else '• ')+phone_name(item.get('course',''),item['title'])+'｜'+due)
     if len(active)>shown:lines.append('＋'+str(len(active)-shown)+' 項見附件')
     if packages:lines.append('📎 附 '+str(len(packages))+' 份準備材料')
     notes=[]
