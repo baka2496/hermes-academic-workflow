@@ -71,23 +71,40 @@ def tick(config,workflow,*,collect=False):
         return result
 
 
-# Phrases that ask for tables; the replacement rule ("不要用表格、│ 分欄…") must not match.
-TABLE_INSTRUCTION=r'[以用]三個反引號包住|反引號包住等寬|[使以]用? ?│ ?分欄|偏好少字和表格|一張小表'
+# Phrases that ask for tables. A phrase preceded by a negation ("不要用表格、│ 分欄…") is the replacement rule.
+TABLE_INSTRUCTION=r'三個反引號包住|反引號包住等寬|│ ?分欄|偏好少字和表格|小表|用表格'
+NEGATION=r'不要|不用|禁止|避免|別用'
+
+
+def asks_for_table(text):
+    import re
+    # The window includes the match itself so "不用表格" (the 用 belongs to the match) counts as negated.
+    return any(not re.search(NEGATION,text[max(0,m.start()-12):m.end()]) for m in re.finditer(TABLE_INSTRUCTION,text))
 
 
 def table_instructions(root):
-    """Personality files that tell a bot to answer Telegram with tables (unreadable on a phone)."""
-    import re
+    """Instructions that make a Telegram bot answer with tables (unreadable on a phone).
+
+    Checked: the root SOUL.md (template for new bots) and, for every profile with a Telegram
+    bot, its SOUL.md, its skills and its scheduled-job prompts (a schedule prompt can carry its
+    own format rule, as the Mail Assistant's morning digest did)."""
+    root=Path(root)
     def telegram_bot(profile):
         try:return any(line.startswith('TELEGRAM_BOT_TOKEN=') for line in (profile/'.env').read_text(encoding='utf-8').splitlines())
         except OSError:return False
+    def read(path):
+        try:return path.read_text(encoding='utf-8-sig')
+        except OSError:return ''
     found=[]
-    # The root SOUL.md is the template new bots start from, so it is checked too.
-    for soul in [Path(root)/'SOUL.md']+sorted(p/'SOUL.md' for p in Path(root).glob('profiles/*') if telegram_bot(p)):
-        try:text=soul.read_text(encoding='utf-8')
-        except OSError:continue
-        if re.search(TABLE_INSTRUCTION,text):found.append(soul.relative_to(root).as_posix())
-    return found
+    texts=[('SOUL.md',read(root/'SOUL.md'))]
+    for profile in sorted(p for p in root.glob('profiles/*') if telegram_bot(p)):
+        texts+=[(f.relative_to(root).as_posix(),read(f)) for f in [profile/'SOUL.md']+sorted(profile.glob('skills/**/SKILL.md'))]
+        try:jobs=json.loads(read(profile/'cron/jobs.json') or '[]')
+        except ValueError:jobs=[]
+        if isinstance(jobs,dict):jobs=jobs.get('jobs',[])
+        texts+=[(profile.relative_to(root).as_posix()+'/cron/'+str(j.get('id')),j.get('prompt') or '') for j in jobs
+            if isinstance(j,dict) and j.get('enabled',True)]
+    return [name for name,text in texts if asks_for_table(text)]
 
 
 def doctor(config,workflow,*,probe=True):
