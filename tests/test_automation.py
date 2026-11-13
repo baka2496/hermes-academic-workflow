@@ -357,3 +357,50 @@ class InstallerTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class BriefTests(unittest.TestCase):
+    """"目前有什麼事情" answers come from brief.py, so it must list every pending item with its real date."""
+    NOW='2026-11-13T16:00:00+08:00'
+
+    def build(self,agenda,trips):
+        import brief,tempfile,json as js
+        folder=Path(tempfile.mkdtemp());path=folder/'opportunities.json'
+        path.write_text(js.dumps({'opportunities':trips},ensure_ascii=False),encoding='utf-8')
+        workflow=type('W',(),{'agenda':lambda self,now=None:agenda})()
+        return brief.build({'trip_opportunities':str(path)},workflow,now=self.NOW)
+
+    def test_lists_every_item_inside_the_window_with_its_date(self):
+        agenda=[dict(course='相對論',title='請假和補考',due_at='2026-11-13T16:40:00+08:00',human_state='open',confidence='needs_check'),
+                dict(course='',title='助學講習',due_at='2026-11-17T12:30:00+08:00',human_state='open'),
+                dict(course='作業系統',title='作業3',due_at='2026-11-18T00:00:00+08:00',human_state='open'),
+                dict(course='國關',title='期中報告',due_at='2026-12-04T23:59:00+08:00',human_state='open'),
+                dict(course='量子',title='讀長文',human_state='open'),
+                dict(course='服飾',title='第五次考試',due_at='2026-11-09T15:40:00+08:00',human_state='past_exam')]
+        text=self.build(agenda,[])['text']
+        for expected in ('今天16:40＊','＊日期由公告推導，待核對','11/17（二）','11/18（三）','另有 1 項較晚、1 項日期待確認'):self.assertIn(expected,text)
+        self.assertNotIn('第五次考試',text)
+        self.assertNotIn('|',text)  # phone format: no table
+
+    def test_trips_waiting_for_a_decision_are_never_dropped(self):
+        trips=[dict(id='a',title='阿里山兩天一夜看日出（雙人）',status='不符合',user_decision={'status':'pending'},outbound_date='2026-12-19',return_date='2026-12-20'),
+               dict(id='b',title='大阪機票',status='不符合',user_decision={'status':'declined'},outbound_date='2026-12-27',return_date='2027-01-12'),
+               dict(id='c',title='舊行程',status='已選定',outbound_date='2026-10-01',return_date='2026-10-02')]
+        result=self.build([],trips)
+        self.assertEqual([x['id'] for x in result['trips']],['a'])
+        self.assertIn('12/19–12/20',result['text']);self.assertIn('待你決定',result['text'])
+
+    def test_a_record_that_contradicts_itself_is_flagged_not_resolved(self):
+        # The real 礁溪 record: an overnight 12/06–12/07 plan with a one-day 12/07 hold at a 烏來 venue.
+        trip=dict(id='x',title='宜蘭礁溪兩天一夜溫泉規劃',destination='台灣宜蘭礁溪',status='已選定',user_decision='pending',
+                  outbound_date='2026-12-06',return_date='2026-12-07',
+                  calendar_hold_check={'details':'2026-12-07T09:00–19:00+08:00，busy_status=tentative'},
+                  venue_research={'venue':'烏來湯布苑溫泉館（新北市烏來區）'})
+        text=self.build([],[trip])['text']
+        self.assertIn('12/06–12/07',text);self.assertIn('⚠️紀錄矛盾：天數、地點',text)
+
+    def test_missing_trip_file_is_reported_as_unconfirmed(self):
+        import brief
+        workflow=type('W',(),{'agenda':lambda self,now=None:[]})()
+        text=brief.build({'trip_opportunities':'Z:/nope.json'},workflow,now=self.NOW)['text']
+        self.assertIn('未確認',text)
