@@ -244,6 +244,21 @@ class PhoneDisplayTests(unittest.TestCase):
             if bot:(root/'profiles'/name/'.env').write_text('TELEGRAM_BOT_TOKEN=x\n',encoding='utf-8')
         self.assertEqual(academic.table_instructions(root),['profiles/a/SOUL.md'])
 
+    def test_doctor_flags_schedule_prompts_and_skills_that_ask_for_tables(self):
+        import academic,json as js
+        root=fixture_root();bot=root/'profiles/mail'
+        (bot/'skills/email/x').mkdir(parents=True);(bot/'cron').mkdir()
+        (bot/'.env').write_text('TELEGRAM_BOT_TOKEN=x\n',encoding='utf-8')
+        (bot/'SOUL.md').write_text('- 手機排版：不要用表格、│ 分欄',encoding='utf-8')
+        (bot/'skills/email/x/SKILL.md').write_text('摘要用一張小表呈現',encoding='utf-8')
+        # The real Mail Assistant prompt that produced a wrapped code-block table on the phone.
+        table='最多五項，用三個反引號包住的小表，欄位為「信件／信箱 │ 需處理 │ 期限 │ 草稿狀態」'
+        jobs=[dict(id='on',enabled=True,prompt=table),dict(id='off',enabled=False,prompt=table),
+              dict(id='ok',enabled=True,prompt='訊息在手機上看：不要用表格、│ 分欄或三個反引號。'),
+              dict(id='ok2',enabled=True,prompt='手機排版（不用表格、條列、少字）；不用表格或程式碼區塊。')]
+        (bot/'cron/jobs.json').write_text(js.dumps({'jobs':jobs},ensure_ascii=False),encoding='utf-8-sig')
+        self.assertEqual(academic.table_instructions(root),['profiles/mail/skills/email/x/SKILL.md','profiles/mail/cron/on'])
+
 
 class PreparationOffTests(unittest.TestCase):
     def test_digest_and_overview_never_mention_materials_when_off(self):
