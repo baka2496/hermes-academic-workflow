@@ -49,9 +49,22 @@ def bootstrap(config):
 @contextmanager
 def commander_scope(config):
     bootstrap(config)
-    from tools.delegate_tool_routes import delegated_profile_scope
-    with delegated_profile_scope(Path(config['hermes_root'])/'profiles/commander'):
-        yield
+    home=Path(config['hermes_root'])/'profiles/commander'
+    from hermes_constants import get_hermes_home,hermes_home_key
+    if hermes_home_key(home)!=hermes_home_key(get_hermes_home()):
+        from tools.delegate_tool_routes import delegated_profile_scope
+        with delegated_profile_scope(home):yield
+        return
+    # The scheduler runs this script AS commander (HERMES_HOME=profiles/commander), where
+    # delegated_profile_scope is a no-op and the sanitized cron env carries no secrets, so
+    # get_secret('TELEGRAM_BOT_TOKEN') came back empty and every digest failed. Bind commander's
+    # own .env-backed scope explicitly.
+    from agent.secret_scope import build_profile_secret_scope,reset_secret_scope,set_secret_scope
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    hydrate_profile_secret_sources(home)
+    token=set_secret_scope(build_profile_secret_scope(home),profile_home=str(home))
+    try:yield
+    finally:reset_secret_scope(token)
 
 
 class NativeTasks:
