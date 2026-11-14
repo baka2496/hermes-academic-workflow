@@ -98,6 +98,12 @@ def active_window(config,clock):
     return int(config.get('daily_hour',8))<=clock.hour<int(config.get('followup_until_hour',22))
 
 
+def digest_order(item):
+    # Strictly by date, undated last: ranking announcement-derived dates last hid a registration due
+    # in 3 days behind items due in 47. Those dates still show a "?" so the owner knows to check them.
+    return (not item.get('due_at'),item.get('due_at') or '')
+
+
 def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     clock=datetime.fromisoformat(iso(now))
     hour=int(config.get('daily_hour',8))
@@ -149,7 +155,7 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
         artifacts.extend(package['payload']['artifacts'])
     artifacts=list({f['sha256']:f for f in artifacts}.values())
     active=[x for x in current.values() if not x['human_complete'] and x['human_state'] not in {'past_exam','closed'} and not (x['human_state']=='overdue' and x.get('due_at') and datetime.fromisoformat(x['due_at'])<clock-timedelta(days=7))]
-    active.sort(key=lambda x:(x.get('confidence')=='needs_check',x.get('due_at') or '9999'))
+    active.sort(key=digest_order)
     shown=int(config.get('digest_items',5))
     lines=['📚 新材料' if followup else '⚠️ 期限將近' if slot.startswith('urgent:') else '📚 今日學業']
     for item in active[:shown]:

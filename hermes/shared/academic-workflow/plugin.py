@@ -15,7 +15,11 @@ from native import NativeTasks
 ACADEMIC_TOPIC=r'學業|作業|考試|複習|讀書|課程|待辦|最近有什麼|有什麼事|重要的事|期限|截止'
 # The owner reads Telegram on a phone: tables and code blocks wrap into an unreadable block there.
 PHONE_FORMAT=('\n手機排版：不要用表格、│ 分欄或三個反引號；一句結論後每項一行「項目｜日期」，下一步最多 4 字，'
-              '整行 18 字內避免折行，最多五項。')
+              '整行 18 字內避免折行，最多五項；action=brief 的清單例外，照貼全文不刪項。')
+# "最近有什麼事" was answered by picking five items from action=status, which dropped the travel
+# section and the undated/later counts; brief.build is the one complete list for those questions.
+BRIEF_RULE=('問近況（最近／目前有什麼事、重要的事、待辦）時用 action=brief：第一行一句結論，接著逐行貼上它的 text，'
+            '不可刪項、不可改日期或狀態、不補清單外事項；有「⚠️紀錄矛盾」要照實請本人確認。問單一事項細節才用 action=status。')
 
 
 def current_tool_identity():
@@ -58,7 +62,7 @@ def register(ctx):
             while len(human_turns)>256:human_turns.popitem(last=False)
         if re.search(ACADEMIC_TOPIC,str(user_message)):
             agenda=workflow.agenda()
-            context='學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項；需要資料時用 action=status。'
+            context='學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項。'+BRIEF_RULE
             if getattr(platform,'value',platform)=='telegram':context+=PHONE_FORMAT
             return {'context':context}
         return None
@@ -66,6 +70,9 @@ def register(ctx):
         try:
             action=args['action']
             if action=='status':result=status(config,workflow)
+            elif action=='brief':
+                import brief
+                result={'text':brief.build(config,workflow)['text']}
             elif action=='source':
                 result=next((x for x in workflow.inbox_items() if x['key']==args.get('key')),{'error':'source_not_found'})
             elif action=='submit':result=submit(config,workflow,args['task_id'])
@@ -96,9 +103,9 @@ def register(ctx):
     def post_llm_call(session_id='',turn_id='',**kwargs):
         with lock:human_turns.pop((session_id,turn_id),None)
     ctx.register_tool(name='academic_workflow',toolset='skills',schema={
-        'name':'academic_workflow','description':'查詢共同學業待辦、讀原始來源、記下本輪本人學業交代，或提交準備產物給協調器驗證。',
+        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
         'parameters':{'type':'object','required':['action'],'properties':{
-            'action':{'type':'string','enum':['status','source','capture','submit']},'key':{'type':'string'},
+            'action':{'type':'string','enum':['brief','status','source','capture','submit']},'key':{'type':'string'},
             'text':{'type':'string','description':'本輪本人要記下的學業事項原文'},'task_id':{'type':'string'}}}},handler=handler)
     ctx.register_hook('pre_llm_call',pre_llm_call)
     ctx.register_hook('pre_tool_call',pre_tool_call)

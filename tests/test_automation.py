@@ -404,3 +404,76 @@ class BriefTests(unittest.TestCase):
         workflow=type('W',(),{'agenda':lambda self,now=None:[]})()
         text=brief.build({'trip_opportunities':'Z:/nope.json'},workflow,now=self.NOW)['text']
         self.assertIn('未確認',text)
+
+
+class ScheduledDeliveryTests(unittest.TestCase):
+    def test_doctor_reports_when_every_recent_send_failed(self):
+        import academic
+        workflow,native,_=prepared()
+        self.assertIsNone(academic.delivery_problem(workflow,now='2026-11-09T08:00:00+08:00'))
+        prepare_digest(workflow,{'daily_hour':8},native=native,now='2026-11-09T08:00:00+08:00')
+        workflow.publish(Rejected(),now='2026-11-09T08:00:00+08:00',kinds={'digest'})
+        problem=academic.delivery_problem(workflow,now='2026-11-09T09:00:00+08:00')
+        self.assertIn('全部失敗',problem)
+        self.assertIsNone(academic.delivery_problem(workflow,now='2026-11-12T09:00:00+08:00')) # older than 48h
+        prepare_digest(workflow,{'daily_hour':8},native=native,now='2026-11-09T08:31:00+08:00')
+        workflow.publish(sent_ok(),now='2026-11-09T08:31:00+08:00',kinds={'digest'})
+        self.assertIsNone(academic.delivery_problem(workflow,now='2026-11-09T09:00:00+08:00'))
+
+    def test_commander_scope_binds_commander_secrets_when_already_running_as_commander(self):
+        # The scheduler runs the coordinator with HERMES_HOME=profiles/commander and a secret-free env;
+        # delegated_profile_scope is a no-op there, which left TELEGRAM_BOT_TOKEN empty for days.
+        import native,types,contextlib
+        home=Path('C:/h/profiles/commander');bound=[]
+        def fakes(current):
+            constants=types.ModuleType('hermes_constants')
+            constants.get_hermes_home=lambda:current;constants.hermes_home_key=lambda p:Path(p).as_posix().lower()
+            scope=types.ModuleType('agent.secret_scope')
+            scope.build_profile_secret_scope=lambda h:{'TELEGRAM_BOT_TOKEN':'t'}
+            scope.set_secret_scope=lambda m,profile_home=None:bound.append((m,profile_home)) or 'token'
+            scope.reset_secret_scope=lambda token:bound.append('reset')
+            loader=types.ModuleType('hermes_cli.env_loader');loader.hydrate_profile_secret_sources=lambda h:{}
+            routes=types.ModuleType('tools.delegate_tool_routes')
+            routes.delegated_profile_scope=lambda h:(bound.append('delegated'),contextlib.nullcontext())[1]
+            return {'hermes_constants':constants,'agent':types.ModuleType('agent'),'agent.secret_scope':scope,
+                'hermes_cli':types.ModuleType('hermes_cli'),'hermes_cli.env_loader':loader,
+                'tools':types.ModuleType('tools'),'tools.delegate_tool_routes':routes}
+        config={'hermes_root':'C:/h'}
+        with patch.object(native,'bootstrap',lambda c:None):
+            with patch.dict(sys.modules,fakes(home)):
+                with native.commander_scope(config):pass
+            self.assertEqual(bound,[({'TELEGRAM_BOT_TOKEN':'t'},str(home)),'reset'])
+            bound.clear()
+            with patch.dict(sys.modules,fakes(Path('C:/h'))):
+                with native.commander_scope(config):pass
+            self.assertEqual(bound,['delegated'])
+
+
+class StatusQuestionTests(unittest.TestCase):
+    def test_status_questions_are_answered_from_the_complete_brief(self):
+        # A Flash model answered "最近有什麼重要的事情嗎" by picking five items from action=status,
+        # dropping the travel section and the later/undated counts.
+        import plugin
+        tools={}
+        ctx=type('Ctx',(),{'hooks':{},'register_hook':lambda s,n,h:s.hooks.__setitem__(n,h),
+            'register_tool':lambda s,**k:tools.__setitem__(k['name'],k)})()
+        workflow=AcademicWorkflow(fixture_root())
+        workflow.ingest('tronclass','homework',[dict(id='h1',kind='homework',title='作業3',course='作業系統',
+            due_at='2099-01-01T23:59:00+08:00',submitted=False)],complete=True)
+        with patch.object(plugin,'load',return_value=({'trip_opportunities':'Z:/nope.json'},workflow)):plugin.register(ctx)
+        context=ctx.hooks['pre_llm_call'](platform='telegram',user_message='最近有什麼重要的事情嗎')['context']
+        self.assertIn('action=brief',context);self.assertIn('不可刪項',context)
+        tool=tools['academic_workflow']
+        self.assertIn('brief',tool['schema']['parameters']['properties']['action']['enum'])
+        text=json.loads(tool['handler']({'action':'brief'}))['text']
+        self.assertIn('📚 學業',text);self.assertIn('🧳 旅遊',text);self.assertIn('1 項較晚',text)
+
+
+class DigestOrderTests(unittest.TestCase):
+    def test_digest_lists_by_date_even_when_a_date_needs_checking(self):
+        from publisher import digest_order
+        items=[dict(title='路跑證明',due_at='2026-12-31T23:59:00+08:00'),
+               dict(title='座位表',due_at=None),
+               dict(title='就貸講習',due_at='2026-11-17T12:30:00+08:00',confidence='needs_check'),
+               dict(title='作業3',due_at='2026-11-18T00:00:00+08:00')]
+        self.assertEqual([x['title'] for x in sorted(items,key=digest_order)],['就貸講習','作業3','路跑證明','座位表'])
