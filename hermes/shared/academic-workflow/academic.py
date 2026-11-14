@@ -107,6 +107,17 @@ def table_instructions(root):
     return [name for name,text in texts if asks_for_table(text)]
 
 
+def delivery_problem(workflow,*,now=None,hours=48):
+    """A message when every Telegram send in the last `hours` failed, else None.
+    A healthy probe from a shell once hid three days of failed digests, so judge by real sends."""
+    since=(datetime.fromisoformat(iso(now))-timedelta(hours=hours)).isoformat()
+    recent=[r for r in workflow.delivery_receipts() if str(r.get('updated_at') or '')>=since]
+    failed=[r for r in recent if r['state']=='failed']
+    if not recent or len(failed)<len(recent):return None
+    last=max(failed,key=lambda r:str(r.get('updated_at') or ''))['receipt'] or {}
+    return '最近 '+str(hours)+' 小時 '+str(len(failed))+' 次送出全部失敗（'+str(last.get('detail') or last.get('error_type') or '原因未記錄')+'）'
+
+
 def doctor(config,workflow,*,probe=True):
     """Check every local dependency the scheduler needs and report what to fix."""
     import subprocess
@@ -146,6 +157,21 @@ def doctor(config,workflow,*,probe=True):
         if source['scope']=='collector' or source['source']=='mail:gmail':
             check('source:'+source['source']+':'+source['scope'],source['complete'],'來源錯誤：'+','.join(map(str,source['errors'])),required=False)
     check('delivery_enabled',config.get('delivery_enabled'),'Telegram 送達尚未啟用；確認 telegram-test 成功後把 delivery_enabled 改為 true',required=False)
+    problem=delivery_problem(workflow)
+    if config.get('delivery_enabled'):
+        check('delivery_recent',not problem,(problem or '')+'；修好後執行 academic.py telegram-test',required=False)
+    if probe and config.get('delivery_enabled'):
+        # The scheduler runs this code AS commander with a secret-free environment; probing from a
+        # shell succeeds even when that setup cannot find the bot token, so re-check in that setup.
+        env={k:v for k,v in os.environ.items() if not k.upper().startswith('TELEGRAM_')}
+        env['HERMES_HOME']=str(root/'profiles/commander')
+        code=('import sys;sys.path.insert(0,sys.argv[1]);from academic import load;from publisher import TelegramTransport;'
+            'c,_=load(sys.argv[2]);TelegramTransport(c).credentials()')
+        try:
+            subprocess.run([config['runtime_python'],'-c',code,str(config['runtime']),str(Path(config['runtime'])/'config.json')],
+                check=True,capture_output=True,timeout=120,env=env,cwd=str(config['runtime']),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            check('telegram_scheduled',True)
+        except Exception:check('telegram_scheduled',False,'排程執行時讀不到 commander 的 TELEGRAM_BOT_TOKEN 或 home_channel；確認 profiles/commander/.env 與 config.yaml',required=False)
     if probe:
         try:
             from publisher import TelegramTransport
