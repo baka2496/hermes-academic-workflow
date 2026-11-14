@@ -467,3 +467,13 @@ class StatusQuestionTests(unittest.TestCase):
         self.assertIn('brief',tool['schema']['parameters']['properties']['action']['enum'])
         text=json.loads(tool['handler']({'action':'brief'}))['text']
         self.assertIn('📚 學業',text);self.assertIn('🧳 旅遊',text);self.assertIn('1 項較晚',text)
+
+
+class DigestOrderTests(unittest.TestCase):
+    def test_digest_lists_by_date_even_when_a_date_needs_checking(self):
+        from publisher import digest_order
+        items=[dict(title='路跑證明',due_at='2026-12-31T23:59:00+08:00'),
+               dict(title='座位表',due_at=None),
+               dict(title='就貸講習',due_at='2026-11-17T12:30:00+08:00',confidence='needs_check'),
+               dict(title='作業3',due_at='2026-11-18T00:00:00+08:00')]
+        self.assertEqual([x['title'] for x in sorted(items,key=digest_order)],['就貸講習','作業3','路跑證明','座位表'])
