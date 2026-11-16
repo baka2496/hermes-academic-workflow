@@ -102,6 +102,40 @@ def build(config,workflow,*,now=None,days=14):
         academic_later=later,academic_undated=undated,trips=found,generated_at=clock.isoformat(timespec='minutes'))
 
 
+def bare(name):
+    return re.sub(r'[（(][^）)]*[）)]?$','',name or '').strip().lower()
+
+
+def course(workflow,name,*,now=None,announcements=3):
+    """One course's latest announcements and open deadlines, from the locally collected TronClass data.
+    "體育課在哪裡上課" took 3.5 minutes of searching files and logs; the answer was already stored here."""
+    clock=datetime.fromisoformat(now) if now else datetime.now().astimezone()
+    wanted=bare(re.sub(r'課$','',(name or '').strip()))
+    items=workflow.inbox_items()
+    names=sorted({x.get('course') for x in items if x.get('course')})
+    matched=[n for n in names if wanted and (wanted in bare(n) or bare(n) in wanted)]
+    if not matched:
+        return dict(text='找不到「'+(name or '')+'」這門課。目前的課：'+'、'.join(names),matched=[])
+    lines=[]
+    checked=max((s['observed_at'] for s in workflow.sources() if s['source']=='tronclass'),default='')
+    for title in matched:
+        lines.append('🏫 '+title+('（資料 '+checked[11:16]+' 更新）' if checked else ''))
+        posts=sorted((x for x in items if x.get('course')==title and x.get('kind')=='announcement' and not x.get('closed')),
+            key=lambda x:x.get('published_at') or '',reverse=True)[:announcements]
+        lines.append('📢 最新公告' if posts else '📢 沒有公告')
+        for post in posts:
+            day=datetime.fromisoformat(post['published_at']) if post.get('published_at') else None
+            stamp='今天' if day and day.date()==clock.date() else day.strftime('%m/%d') if day else '日期未知'
+            lines.append('• '+stamp+' '+short(post.get('title'),14)+'：'+re.sub(r'\s+',' ',post.get('description') or '').strip()[:120])
+        open_items=[x for x in workflow.agenda(now=clock.isoformat()) if x.get('course')==title and x.get('human_state')=='open']
+        if open_items:
+            lines.append('📝 待辦')
+            for item in sorted(open_items,key=lambda x:x.get('due_at') or '9999')[:5]:
+                due=datetime.fromisoformat(item['due_at']) if item.get('due_at') else None
+                lines.append('• '+short(item.get('title'),14)+'｜'+(when(due,clock) if due else '日期待確認'))
+    return dict(text='\n'.join(lines),matched=matched,checked_at=checked)
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     parser=argparse.ArgumentParser()
