@@ -477,3 +477,35 @@ class DigestOrderTests(unittest.TestCase):
                dict(title='就貸講習',due_at='2026-11-17T12:30:00+08:00',confidence='needs_check'),
                dict(title='作業3',due_at='2026-11-18T00:00:00+08:00')]
         self.assertEqual([x['title'] for x in sorted(items,key=digest_order)],['就貸講習','作業3','路跑證明','座位表'])
+
+
+class CourseQuestionTests(unittest.TestCase):
+    NOW='2026-11-16T13:34:00+08:00'
+
+    def workflow(self):
+        workflow=AcademicWorkflow(fixture_root())
+        workflow.ingest('tronclass','1151:391227:announcement',[
+            dict(id='announcement:391227:2',kind='announcement',course='體育',title='上課地點公告',description='今日上課籃排球場喔',
+                 published_at='2026-11-16T12:05:46+08:00',needs_interpretation=True),
+            dict(id='announcement:391227:1',kind='announcement',course='體育',title='上課地點公告',description='今天上課地點在操場單槓區',
+                 published_at='2026-11-02T13:11:09+08:00',needs_interpretation=True)],complete=True)
+        return workflow
+
+    def test_course_lookup_returns_todays_announcement_first(self):
+        import brief
+        result=brief.course(self.workflow(),'體育課',now=self.NOW)
+        self.assertEqual(result['matched'],['體育'])
+        lines=result['text'].split('\n')
+        self.assertIn('今天',lines[2]);self.assertIn('籃排球場',lines[2])
+        self.assertIn('找不到',brief.course(self.workflow(),'微積分',now=self.NOW)['text'])
+
+    def test_course_question_triggers_the_course_rule(self):
+        # "體育課在哪裡上課" matched no topic word, so the bot spent 3.5 minutes searching files and logs.
+        import plugin
+        tools={}
+        ctx=type('Ctx',(),{'hooks':{},'register_hook':lambda s,n,h:s.hooks.__setitem__(n,h),
+            'register_tool':lambda s,**k:tools.__setitem__(k['name'],k)})()
+        with patch.object(plugin,'load',return_value=({},self.workflow())):plugin.register(ctx)
+        context=ctx.hooks['pre_llm_call'](platform='telegram',user_message='體育課在哪裡上課')['context']
+        self.assertIn('action=course',context);self.assertIn('不要搜尋檔案',context)
+        self.assertIn('籃排球場',json.loads(tools['academic_workflow']['handler']({'action':'course','key':'體育'}))['text'])
