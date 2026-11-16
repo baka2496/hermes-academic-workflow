@@ -82,16 +82,79 @@ def countdown(due,clock):
 
 
 PHONE_LINE=21 # characters per line in the owner's iPhone Telegram
-NAME_WIDTH=9  # leaves room for "• " and "｜11/18（49天）" on one phone line
 
 
-def phone_name(course,title):
-    """Shortest useful label: course + title when it fits, else the title, cut cleanly."""
+WEEKDAY='一二三四五六日'
+KIND={'exam':'考試','homework':'作業','announcement':'公告','email':'信件','manual':'你記的'}
+SCOPE={'exam':'考試','homework':'作業','announcement':'公告','collector':'課程','courses':'課程'}
+
+
+def width(text):
+    # Chinese and full-width characters take a whole cell on the phone; digits and latin about half.
+    return sum(1 if ord(c)>=0x2E80 else 0.55 for c in text)
+
+
+def fit(text,limit):
+    if width(text)<=limit:return text
+    while text and width(text)+1>limit:text=text[:-1]
+    return text.rstrip()+'…'
+
+
+def item_label(item):
+    """Course and title together: "1116第六次考試" alone did not say which class had the exam."""
     import re
-    title=re.sub(r'[【】\[\]「」]','',title).strip()
-    course=re.sub(r'[（(][^）)]*[）)]?$','',course or '').strip() # drop "(一)" style suffixes
-    if course and len(course)+1+len(title)<=NAME_WIDTH:return course+' '+title
-    return title if len(title)<=NAME_WIDTH else title[:NAME_WIDTH-1]+'…'
+    title=re.sub(r'[【】\[\]「」"“”]','',item.get('title','')).strip()
+    # Leading greetings and a date already shown on the next line only push the subject off screen.
+    title=re.sub(r'^(歡迎參加|關於|公告[:：]?)','',title).strip() or title
+    title=re.sub(r'^\d{2,4}[./]\d{1,2}[./]\d{1,2}\s*([（(].[）)])?','',title).strip() or title
+    course=re.sub(r'[（(][^）)]*[）)]?$','',item.get('course') or '').strip()
+    if course:title=title.replace(course,'').strip() or title
+    head=course or KIND.get(item.get('kind'),'')
+    return fit((head+'｜' if head else '')+title,PHONE_LINE-2)
+
+
+def due_line(item,clock):
+    due=datetime.fromisoformat(item['due_at'])
+    # TronClass writes "end of 12/01" as 12/02 00:00, which reads like a day later; show 12/01 24:00.
+    clock_text='24:00' if due.strftime('%H:%M')=='00:00' else due.strftime('%H:%M')
+    if clock_text=='24:00':due-=timedelta(minutes=1)
+    day='今天' if due.date()==clock.date() else '明天' if due.date()==(clock+timedelta(days=1)).date() else due.strftime('%m/%d')+'（'+WEEKDAY[due.weekday()]+'）'
+    day+=('' if day.endswith('）') else ' ')+clock_text
+    if item.get('confidence')=='needs_check':return day+'（日期待核對）'
+    return day+'（還有 '+countdown(due,clock).replace('小時',' 小時').replace('天',' 天')+'）'
+
+
+def missing_sources(workflow):
+    """Name what was not read instead of "部分來源不完整"; Outlook is knowingly not connected."""
+    gaps=[]
+    for source in workflow.sources():
+        if source['complete'] or source['source']=='mail:outlook':continue
+        name='TronClass '+SCOPE.get(source['scope'].split(':')[-1],'資料') if source['source']=='tronclass' else 'Gmail 信件' if source['source']=='mail:gmail' else None
+        if name and name not in gaps:gaps.append(name)
+    return gaps
+
+
+def digest_message(active,clock,*,header,shown,urgent_keys=()):
+    """Phone message: what is due soon, each item as 「課程｜標題」 plus its time on the next line."""
+    soon=[x for x in active if x.get('due_at') and x.get('confidence')!='needs_check'
+        and 0<(datetime.fromisoformat(x['due_at'])-clock).total_seconds()<=86400 or x['key'] in urgent_keys]
+    late=[x for x in active if x.get('due_at') and datetime.fromisoformat(x['due_at'])<=clock and x not in soon]
+    rest=[x for x in active if x not in soon and x not in late]
+    lines=[header]
+    if late:
+        lines.append('⛔ 已過期、還沒完成')
+        for item in late:lines+=['• '+item_label(item),'  '+datetime.fromisoformat(item['due_at']).strftime('%m/%d %H:%M')+' 截止']
+    if soon:
+        lines.append('⏰ 24 小時內')
+        for item in soon:lines+=['• '+item_label(item),'  '+due_line(item,clock)]
+    upcoming=[x for x in rest if x.get('due_at')][:max(0,shown-len(soon))]
+    if upcoming:
+        lines.append('📅 接下來')
+        for item in upcoming:lines+=['• '+item_label(item),'  '+due_line(item,clock)]
+    if not soon and not upcoming:lines.append('• 目前沒有有日期的待辦')
+    left=len(rest)-len(upcoming)
+    if left:lines.append('＋另有 '+str(left)+' 項（較晚或沒日期）')
+    return lines
 
 
 def active_window(config,clock):
@@ -108,12 +171,14 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     clock=datetime.fromisoformat(iso(now))
     hour=int(config.get('daily_hour',8))
     current={x['key']:x for x in workflow.agenda(now=now)}
-    risk=[];within_six=False
+    risk=[];risk_items={};within_six=False
     for item in current.values():
         if item['human_complete'] or item['human_state'] in {'past_exam','closed','overdue'} or not item.get('due_at') or item.get('confidence')=='needs_check':continue
         hours=(datetime.fromisoformat(item['due_at'])-clock).total_seconds()/3600
         band=6 if 0<hours<=6 else 24 if 0<hours<=24 else None
-        if band:risk.append(digest([item['key'],item['revision'],band]));within_six=within_six or band==6
+        # Keyed on the deadline, not the revision: a refreshed TronClass record re-sent the same exam
+        # reminder at 09:44 and 12:04. A moved deadline is still a new reminder.
+        if band:risk.append(digest([item['key'],item['due_at'],band]));risk_items[risk[-1]]=item['key'];within_six=within_six or band==6
     fresh_risk=[x for x in risk if not workflow.get_meta('alert:'+x)]
     urgent=bool(fresh_risk) and (clock.hour>=hour or within_six)
     if not force and clock.hour<hour and not urgent:return {'state':'waiting_daily_window'}
@@ -154,24 +219,20 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     for package in packages:
         artifacts.extend(package['payload']['artifacts'])
     artifacts=list({f['sha256']:f for f in artifacts}.values())
-    active=[x for x in current.values() if not x['human_complete'] and x['human_state'] not in {'past_exam','closed'} and not (x['human_state']=='overdue' and x.get('due_at') and datetime.fromisoformat(x['due_at'])<clock-timedelta(days=7))]
+    # A date guessed from an announcement that has already passed ("運動會規程 11/11 已過期?") is not
+    # something to act on; it stays in the attached overview only.
+    active=[x for x in current.values() if not x['human_complete'] and x['human_state'] not in {'past_exam','closed'}
+        and not (x['human_state']=='overdue' and (x.get('confidence')=='needs_check' or x.get('due_at') and datetime.fromisoformat(x['due_at'])<clock-timedelta(days=7)))]
     active.sort(key=digest_order)
     shown=int(config.get('digest_items',5))
-    lines=['📚 新材料' if followup else '⚠️ 期限將近' if slot.startswith('urgent:') else '📚 今日學業']
-    for item in active[:shown]:
-        # Keep the chat message glanceable: one short line per item, details live in the attachments.
-        if item.get('due_at'):
-            due_at=datetime.fromisoformat(item['due_at'])
-            due=due_at.strftime('%m/%d')+'（'+countdown(due_at,clock)+('?' if item.get('confidence')=='needs_check' else '')+'）'
-            soon=0<(due_at-clock).total_seconds()<=86400
-        else:due='日期待確認';soon=False
-        lines.append(('‼️' if soon else '• ')+phone_name(item.get('course',''),item['title'])+'｜'+due)
-    if len(active)>shown:lines.append('＋'+str(len(active)-shown)+' 項見附件')
+    urgent_keys={risk_items[x] for x in fresh_risk} if slot.startswith('urgent:') else set()
+    header='📚 新材料' if followup else '⚠️ 期限提醒' if urgent_keys else '📚 今日學業'
+    lines=digest_message(active,clock,header=header,shown=shown,urgent_keys=urgent_keys)
     if packages:lines.append('📎 附 '+str(len(packages))+' 份準備材料')
-    notes=[]
-    if any(not x['complete'] and x['source']!='mail:outlook' for x in workflow.sources()):notes.append('部分來源不完整')
-    if parked:notes.append(str(len(parked))+' 項準備卡住')
-    if notes:lines.append('ℹ️ '+'、'.join(notes)+'（詳見附件）')
+    gaps=missing_sources(workflow)
+    if gaps:lines.append('ℹ️ '+'、'.join(gaps)+' 沒讀完整，可能漏列')
+    if parked:lines.append('ℹ️ '+str(len(parked))+' 項準備材料卡住')
+    lines.append('完整清單在附件「學業總覽.md」')
     key='digest:'+slot+':'+fingerprint
     # An undelivered row with the same slot and content stays as history; a retry needs its own key.
     earlier=sum(1 for x in workflow.publications() if x['key']==key or x['key'].startswith(key+':retry'))

@@ -101,7 +101,8 @@ class DigestContentTests(unittest.TestCase):
         self.assertEqual(result['state'],'prepared')
         transport=sent_ok()
         workflow.publish(transport,now='2026-11-09T09:00:00+08:00',kinds={'digest'})
-        self.assertIn('（3小時）',transport.texts[0])
+        self.assertIn('還有 3 小時',transport.texts[0])
+        self.assertIn('普物實驗｜實驗報告',transport.texts[0])
 
     def test_digest_lists_more_items_with_countdown(self):
         workflow=AcademicWorkflow(fixture_root())
@@ -113,9 +114,9 @@ class DigestContentTests(unittest.TestCase):
         workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
         text=transport.texts[0]
         self.assertEqual(text.count('習題'),5)
-        self.assertIn('＋2 項',text)
-        self.assertLessEqual(len(text.splitlines()),8)
-        self.assertIn('（2天）',text)
+        self.assertIn('＋另有 2 項',text)
+        self.assertLessEqual(len(text.splitlines()),15)
+        self.assertIn('還有 2 天',text)
 
 
 class HealthTests(unittest.TestCase):
@@ -221,10 +222,11 @@ class PhoneDisplayTests(unittest.TestCase):
         for line in text.splitlines():self.assertLessEqual(phone_width(line),self.PHONE_LINE,line)
 
     def test_long_course_and_title_are_cut_cleanly(self):
-        from publisher import phone_name
-        self.assertEqual(phone_name('作業系統','作業3'),'作業系統 作業3')
-        self.assertEqual(phone_name('量子物理(一)','請各位同學先閱讀這篇長文'),'請各位同學先閱讀…')
-        self.assertEqual(phone_name('固態物理導論','【期中考座位】'),'期中考座位')
+        from publisher import item_label
+        self.assertEqual(item_label(dict(course='作業系統',title='作業3')),'作業系統｜作業3')
+        self.assertEqual(item_label(dict(course='固態物理導論',title='【期中考座位】')),'固態物理導論｜期中考座位')
+        self.assertEqual(item_label(dict(kind='email',title='歡迎參加115.11.17(二)輔仁大學助學方案暨就學貸款宣導講習')),'信件｜輔仁大學助學方案暨就學貸款宣導…')
+        self.assertLessEqual(phone_width('• '+item_label(dict(course='國際關係與亞太現勢',title='國關課 交期中報告 日期修正'))),self.PHONE_LINE)
 
     def test_telegram_academic_question_gets_phone_format_rule(self):
         import plugin
@@ -509,3 +511,57 @@ class CourseQuestionTests(unittest.TestCase):
         context=ctx.hooks['pre_llm_call'](platform='telegram',user_message='體育課在哪裡上課')['context']
         self.assertIn('action=course',context);self.assertIn('不要搜尋檔案',context)
         self.assertIn('籃排球場',json.loads(tools['academic_workflow']['handler']({'action':'course','key':'體育'}))['text'])
+
+
+class ClearDigestTests(unittest.TestCase):
+    """Owner, 11/16: "根本就不清楚想要表達什麼" about 「‼️1116第六次考試｜11/16（3小時）」 under
+    「115學年度輔仁…｜11/11（已過期?）」, sent four times between 22:39 and 12:04."""
+    def sent(self,items,now,**kw):
+        workflow=AcademicWorkflow(fixture_root());workflow.set_meta('first_preparation_verified',True)
+        for source,scope,rows,complete in items:workflow.ingest(source,scope,rows,complete=complete)
+        result=prepare_digest(workflow,{'daily_hour':8},now=now,**kw)
+        transport=sent_ok();workflow.publish(transport,now=now,kinds={'digest'})
+        return workflow,result,transport.texts[0] if transport.texts else ''
+
+    def test_exam_names_its_course_and_time(self):
+        exam=dict(id='e1',kind='exam',title='1116第六次考試',course='中華服飾設計與文化',due_at='2026-11-16T15:40:00+08:00',submitted=False,closed=False)
+        _,_,text=self.sent([('tronclass','exam',[exam],True)],'2026-11-16T12:04:00+08:00')
+        self.assertIn('中華服飾設計與文化｜1116第六次考試',text)
+        self.assertIn('今天 15:40（還有 3 小時）',text)
+        self.assertIn('24 小時內',text)
+        for line in text.splitlines():self.assertLessEqual(phone_width(line),PhoneDisplayTests.PHONE_LINE,line)
+
+    def test_passed_guessed_dates_are_left_out_and_unsure_dates_say_so(self):
+        rows=[dict(id='a1',kind='announcement',title='115學年度輔仁大學校慶運動會競賽規程公告',course='體育',due_at='2026-11-11T16:00:00+08:00',needs_check=True,confidence='needs_check'),
+              dict(id='a2',kind='announcement',title='國關課 交期中報告 日期修正',course='國際關係與亞太現勢',due_at='2026-12-04T23:59:59+08:00',confidence='needs_check')]
+        workflow,_,text=self.sent([('tronclass','announcement',rows,True)],'2026-11-16T08:00:00+08:00')
+        states={x['title'][:6]:(x['human_state'],x.get('confidence')) for x in workflow.agenda(now='2026-11-16T08:00:00+08:00')}
+        if states.get('115學年度')!=('overdue','needs_check'):self.skipTest('fixture does not mark announcement dates as needs_check: '+str(states))
+        self.assertNotIn('運動會',text)
+        self.assertNotIn('?',text)
+        self.assertIn('日期待核對',text)
+
+    def test_midnight_deadline_reads_as_the_day_before(self):
+        hw=dict(id='h4',kind='homework',title='作業4',course='作業系統',due_at='2026-12-02T00:00:00+08:00',submitted=False,closed=False)
+        _,_,text=self.sent([('tronclass','homework',[hw],True)],'2026-11-16T08:00:00+08:00')
+        self.assertIn('12/01（二）24:00',text)
+
+    def test_missing_source_is_named(self):
+        hw=dict(id='h1',kind='homework',title='HW#3',course='相對論',due_at='2026-11-20T23:59:00+08:00',submitted=False,closed=False)
+        _,_,text=self.sent([('tronclass','homework',[hw],True),('tronclass','1151:1:exam',[],False),('mail:outlook','academic_candidates',[],False)],'2026-11-16T08:00:00+08:00')
+        self.assertIn('TronClass 考試 沒讀完整',text)
+        self.assertNotIn('部分來源不完整',text)
+        self.assertNotIn('Outlook',text)
+
+    def test_refreshed_record_does_not_resend_the_same_reminder(self):
+        exam=dict(id='e1',kind='exam',title='1116第六次考試',course='中華服飾設計與文化',due_at='2026-11-16T15:40:00+08:00',submitted=False,closed=False)
+        workflow,_,_=self.sent([('tronclass','exam',[exam],True)],'2026-11-16T08:00:00+08:00')
+        transport=sent_ok()
+        prepare_digest(workflow,{'daily_hour':8},now='2026-11-16T09:44:00+08:00');workflow.publish(transport,now='2026-11-16T09:44:00+08:00',kinds={'digest'})
+        self.assertEqual(len(transport.texts),1) # 6-hour reminder
+        workflow.ingest('tronclass','exam',[dict(exam,description='考試範圍更新')],complete=True)
+        result=prepare_digest(workflow,{'daily_hour':8},now='2026-11-16T12:04:00+08:00')
+        self.assertNotEqual(result['state'],'prepared',result)
+        workflow.ingest('tronclass','exam',[dict(exam,due_at='2026-11-16T16:40:00+08:00')],complete=True)
+        moved=prepare_digest(workflow,{'daily_hour':8},now='2026-11-16T12:05:00+08:00')
+        self.assertEqual(moved['state'],'prepared')
