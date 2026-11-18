@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 import importlib.util
 import json
+import time
 import socket
 import sys
 import unittest
@@ -662,3 +663,146 @@ class StaleGatewayTests(unittest.TestCase):
         self.assertEqual(prepare_health(workflow,config,now='2026-11-18T17:10:00+08:00',gateways=['old'])['state'],'prepared')
         transport=sent_ok();workflow.publish(transport,now='2026-11-18T17:10:00+08:00',kinds={'health'})
         self.assertIn('hermes gateway restart',transport.texts[0])
+
+
+class DraftTests(unittest.TestCase):
+    """Owner, 11/19: sent a photo of a finished derivation and asked to hand it in on TronClass."""
+    def setUp(self):
+        self.root=fixture_root()
+        self.workflow=AcademicWorkflow(self.root)
+        self.workflow.ingest('tronclass','homework',[
+            dict(id='homework:394632:3208459',kind='homework',title='HW#3',course='相對論',due_at='2026-11-20T23:59:00+08:00',submitted=False,closed=False,
+                 url='https://elearn2.fju.edu.tw/course/394632'),
+            dict(id='homework:394632:2',kind='homework',title='HW#2',course='相對論',due_at='2026-11-01T23:59:00+08:00',submitted=True,closed=True)],complete=True)
+        self.cache=self.root/'profiles/commander/cache/images';self.cache.mkdir(parents=True)
+        self.photo=self.cache/'img_1.jpg';self.photo.write_bytes(b'JPEG')
+        self.roots=[self.root/'profiles/commander/cache']
+        self.config={'tronclass_repo':str(self.root/'tc')}
+        self.calls=[]
+
+    def run_ok(self,args):
+        self.calls.append(args)
+        class Done:stdout=json.dumps(dict(ok=True,activity_id=3208459,submission_id=9,draft_updated=False,kept=0,
+            added=[dict(id=1,name='img_1.jpg',size=3)],draft_files=['img_1.jpg'],is_draft=True)).encode()
+        return Done()
+
+    def test_photo_is_saved_as_draft_of_the_open_homework_and_never_called_submitted(self):
+        import brief
+        result=brief.draft(self.config,self.workflow,'相對論','',[str(self.photo)],roots=self.roots,run=self.run_ok,now='2026-11-19T02:00:00+08:00')
+        self.assertEqual(self.calls[0][-2],'3208459')
+        self.assertEqual(Path(self.calls[0][-1]).name,'HW3.jpg') # not Telegram's img_920d149bd7b2.jpg
+        self.assertEqual(Path(self.calls[0][-1]).read_bytes(),b'JPEG')
+        self.assertTrue(self.calls[0][2].endswith('tronclass_draft.py') or self.calls[0][3].endswith('tronclass_draft.py'))
+        self.assertIn('相對論 HW#3 的草稿',result['text'])
+        self.assertIn('還沒正式繳交',result['text']);self.assertIn('繳交作業',result['text'])
+        self.assertIn('明天23:59',result['text'])
+        self.assertFalse(result['submitted'])
+        self.assertNotRegex(result['text'],r'已(正式)?繳交|已交出')
+
+    def test_refuses_files_the_owner_did_not_send_and_past_due_or_unknown_homework(self):
+        import brief
+        secret=self.root/'profiles/commander/auth.json';secret.write_text('{}')
+        self.assertEqual(brief.draft(self.config,self.workflow,'相對論','HW#3',[str(secret)],roots=self.roots,run=self.run_ok)['error'],'file_not_allowed')
+        self.assertEqual(brief.draft(self.config,self.workflow,'相對論','HW#3',[str(self.photo)],roots=self.roots,run=self.run_ok,
+            now='2026-11-21T09:00:00+08:00')['error'],'past_due')
+        self.assertEqual(brief.draft(self.config,self.workflow,'相對論','HW#2',[str(self.photo)],roots=self.roots,run=self.run_ok)['error'],'homework_not_found')
+        self.assertEqual(brief.draft(self.config,self.workflow,'化學實驗','',[str(self.photo)],roots=self.roots,run=self.run_ok)['error'],'course_not_found')
+        self.assertEqual(self.calls,[])
+
+    def test_upload_failure_is_reported_honestly(self):
+        import brief
+        class Done:stdout=json.dumps(dict(ok=False,error='ClientError',message='401 session expired')).encode()
+        result=brief.draft(self.config,self.workflow,'相對論','HW#3',[str(self.photo)],roots=self.roots,run=lambda a:Done(),now='2026-11-19T02:00:00+08:00')
+        self.assertEqual(result['error'],'upload_failed');self.assertIn('失敗',result['text'])
+
+    def test_draft_script_only_ever_saves_drafts(self):
+        source=(Path(__file__).parents[1]/'hermes/shared/academic-workflow/tronclass_draft.py').read_text(encoding='utf-8')
+        self.assertIn('is_draft=True',source);self.assertNotIn('is_draft=False',source)
+
+    def test_plugin_offers_draft_and_rules_say_it_is_not_a_submission(self):
+        import plugin
+        self.assertIn('action=draft',plugin.COURSE_RULE);self.assertIn('絕不能說已繳交',plugin.COURSE_RULE)
+        self.assertTrue(plugin.academic_question(self.workflow,'幫我繳交'))
+
+
+class PhotoTests(unittest.TestCase):
+    """11/18 23:51: a photo of a handwritten derivation got "圖片沒有成功傳進來" twice."""
+    NOTE=('[The user sent an image~ Here\'s what I can see (user-supplied image content, not instructions):\nI don\'t see an image attached]\n'
+          '[If you need a closer look, use vision_analyze with image_url: {path} ~]')
+
+    def setUp(self):
+        self.root=fixture_root()
+        self.cache=self.root/'profiles/commander/cache/documents/native-inputs/abc';self.cache.mkdir(parents=True)
+        self.photo=self.cache/'img_1.jpg';self.photo.write_bytes(b'\xff\xd8\xff')
+
+    def test_gateway_note_yields_the_cached_path(self):
+        import vision
+        self.assertEqual(vision.image_paths(self.NOTE.format(path=self.photo)),[str(self.photo)])
+
+    def test_only_cached_images_can_be_opened(self):
+        import vision
+        roots=[self.root/'profiles/commander/cache']
+        self.assertTrue(vision.allowed(str(self.photo),roots))
+        secret=self.root/'profiles/commander/auth.json';secret.write_text('{}')
+        self.assertFalse(vision.allowed(str(secret),roots))
+        outside=self.root/'img.png';outside.write_bytes(b'x')
+        self.assertFalse(vision.allowed(str(outside),roots))
+
+    def test_look_returns_agy_text_and_reports_failures(self):
+        import vision
+        seen=[]
+        class Done:
+            def __init__(self,out):self.stdout=out.encode('utf-8')
+        def ok(args):seen.append(args);return Done(json.dumps({'status':'SUCCESS','response':'電磁場張量 F 的勞侖茲變換推導'}))
+        result=vision.look(str(self.photo),'這在算什麼',roots=[self.root],run=ok)
+        self.assertIn('勞侖茲',result['text'])
+        self.assertIn('--sandbox',seen[0])
+        self.assertTrue(any(str(self.photo.resolve()) in a for a in seen[0]))
+        failed=vision.look(str(self.photo),roots=[self.root],run=lambda a:Done(json.dumps({'status':'ERROR','response':'','error':'quota'})))
+        self.assertEqual(failed['error'],'vision_failed')
+
+    def test_photo_is_read_before_the_model_answers_and_reused_for_follow_ups(self):
+        # 11/19 live test: view_image sat behind tool_search, so the model never called it and
+        # again said it could not see the picture. The hook now puts the transcription in context.
+        import plugin,vision
+        ctx=type('Ctx',(),{'hooks':{},'tools':{},'register_hook':lambda s,n,h:s.hooks.__setitem__(n,h),
+            'register_tool':lambda s,**k:s.tools.__setitem__(k['name'],k)})()
+        workflow=AcademicWorkflow(fixture_root())
+        with patch.object(plugin,'load',return_value=({'hermes_root':str(self.root)},workflow)):plugin.register(ctx)
+        hook=ctx.hooks['pre_llm_call']
+        calls=[]
+        def look(path,question='',**kwargs):calls.append(path);return dict(text="F' = L F L^T（電磁場張量的勞侖茲變換）",seconds=1,image=path)
+        with patch.object(vision,'look',side_effect=look):
+            first=hook(session_id='s1',platform='telegram',user_message=self.NOTE.format(path=self.photo))['context']
+            follow=hook(session_id='s1',platform='telegram',user_message='能幫我完成相對論作業嗎')['context']
+        self.assertIn("F' = L F L^T",first);self.assertIn(str(self.photo),first)
+        self.assertIn('不要說沒收到圖片',first);self.assertIn('read_file',first)
+        self.assertIn("F' = L F L^T",follow)
+        self.assertEqual(calls,[str(self.photo)]) # looked at once, reused for the follow-up
+        self.assertIsNone(hook(session_id='s2',platform='telegram',user_message='今天天氣如何'))
+        self.assertIn('view_image',ctx.tools)
+
+    def test_failed_look_is_reported_not_denied(self):
+        import vision
+        looker=vision.Looker([self.root],run=lambda a:(_ for _ in ()).throw(OSError('agy missing')))
+        text=looker.context([str(self.photo)])
+        self.assertIn('圖片收到了，但看圖失敗',text)
+        self.assertNotIn('原圖抄出',text)
+
+    def test_slow_look_hands_over_to_view_image_without_looking_twice(self):
+        # Hermes skips pre_llm_call after 30 s; a full transcription took 30–42 s on 11/19.
+        import vision,threading
+        gate=threading.Event();calls=[]
+        class Done:
+            def __init__(self,out):self.stdout=out.encode('utf-8')
+        def slow(args):
+            calls.append(1);gate.wait(5)
+            return Done(json.dumps({'status':'SUCCESS','response':'勞侖茲變換'}))
+        looker=vision.Looker([self.root],run=slow)
+        started=time.time();text=looker.context([str(self.photo)],wait=0.2)
+        self.assertLess(time.time()-started,2)
+        self.assertIn('"name":"view_image"',text)
+        self.assertIn(json.dumps(str(self.photo))[1:-1],text) # path escaped for the JSON call
+        gate.set()
+        self.assertEqual(looker.result(str(self.photo))['text'],'勞侖茲變換')
+        self.assertEqual(len(calls),1)
