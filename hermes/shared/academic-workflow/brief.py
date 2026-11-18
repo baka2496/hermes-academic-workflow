@@ -204,6 +204,76 @@ def attachment(config,workflow,name,title='',*,run=None,now=None):
         reply='回覆時每個檔案單獨一行寫 MEDIA:檔案路徑，檔案就會傳到 Telegram。')
 
 
+DRAFT_NOTE='⚠️ 只存成草稿，還沒正式繳交：請到 TronClass 作業頁確認檔案後按「繳交作業」。'
+
+
+def draft(config,workflow,name,title,paths,*,roots=(),run=None,now=None):
+    """Save photos the owner sent as the draft of an open homework.
+
+    11/19: the owner sent a photo of a finished derivation and asked to hand it in. The TronClass
+    tool only saves drafts by design (the owner presses 「繳交作業」 on the page), so this never submits."""
+    import subprocess
+    sys.path.insert(0,str(Path(__file__).parent))
+    import vision
+    paths=[p for p in (paths or []) if p]
+    if not paths:return dict(error='no_files',text='沒有要上傳的圖片或檔案路徑。')
+    bad=[p for p in paths if not vision.allowed(p,roots) and not allowed_file(p,roots)]
+    if bad:return dict(error='file_not_allowed',text='只能上傳本人剛傳給機器人的檔案：'+'、'.join(Path(p).name for p in bad))
+    found=course(workflow,name,now=now)
+    if not found['matched']:return dict(error='course_not_found',text=found['text'])
+    now=datetime.fromisoformat(now) if isinstance(now,str) else (now or datetime.now().astimezone())
+    wanted=re.sub(r'[\s#＃【】「」]','',title or '').lower()
+    norm=lambda text:re.sub(r'[\s#＃【】「」]','',text or '').lower()
+    homework=[x for x in workflow.inbox_items() if x.get('course') in found['matched'] and x.get('kind')=='homework'
+              and not x.get('closed') and not x.get('submitted') and re.match(r'homework:\d+:\d+$',x.get('id') or '')]
+    if wanted:homework=[x for x in homework if wanted in norm(x.get('title'))]
+    homework.sort(key=lambda x:(norm(x.get('title'))!=wanted,x.get('due_at') or '9999'))
+    if not homework:
+        return dict(error='homework_not_found',text='「'+(name or '')+' '+(title or '')+'」找不到還沒交的 TronClass 作業，未上傳。')
+    if not wanted and len(homework)>1:
+        return dict(error='ambiguous',text='這門課有 '+str(len(homework))+' 份未交作業，要交哪一份？'+'、'.join(x.get('title') or '' for x in homework))
+    item=homework[0]
+    due=datetime.fromisoformat(item['due_at']).astimezone(now.tzinfo) if item.get('due_at') else None
+    if due and due<now:
+        return dict(error='past_due',text=(item.get('course') or '')+' '+(item.get('title') or '')+' 已過截止時間，未上傳；請到 TronClass 確認是否還能補交。')
+    activity=int(item['id'].split(':')[2])
+    # Telegram names photos img_920d149bd7b2.jpg; the teacher sees the file name, so upload copies
+    # named after the homework (HW3_1.jpg, HW3_2.jpg …).
+    import shutil
+    stem=re.sub(r'[^0-9A-Za-z一-鿿_-]+','',item.get('title') or 'homework') or 'homework'
+    folder=Path(config.get('state_dir') or workflow.root)/'drafts'/str(activity)/datetime.now().strftime('%Y%m%d-%H%M%S')
+    folder.mkdir(parents=True,exist_ok=True)
+    named=[]
+    for n,p in enumerate(paths,1):
+        target=folder/(stem+('_'+str(n) if len(paths)>1 else '')+Path(p).suffix.lower())
+        shutil.copyfile(p,target);named.append(target)
+    repo=Path(config['tronclass_repo'])
+    python=repo/'.venv/Scripts/python.exe'
+    script=Path(__file__).with_name('tronclass_draft.py')
+    run=run or (lambda args:subprocess.run(args,capture_output=True,timeout=240,cwd=str(repo),env=cli_env(),
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+    try:
+        done=run([str(python),'-X','utf8',str(script),str(repo),str(activity)]+[str(p) for p in named])
+        out=done.stdout.decode('utf-8','replace') if isinstance(done.stdout,bytes) else str(done.stdout or '')
+        result=json.loads(out.strip().splitlines()[-1])
+    except Exception as exc:result=dict(ok=False,error=type(exc).__name__,message=str(exc)[:200])
+    label=(item.get('course') or '')+' '+(item.get('title') or '')
+    if not result.get('ok'):
+        import logging;logging.getLogger(__name__).warning('draft upload failed: %s',result)
+        return dict(error='upload_failed',text='❌ '+label+' 草稿上傳失敗（'+str(result.get('message') or result.get('error'))[:120]+'），TronClass 上沒有變更或只上傳了一部分，請到作業頁確認。')
+    lines=['✅ 已存成 '+label+' 的草稿（'+str(len(result.get('added') or []))+' 個檔案'
+           +('，保留原本草稿的 '+str(result['kept'])+' 個' if result.get('kept') else '')+'）',
+           '截止：'+(when(due,now)+' '+due.strftime('%H:%M') if due and when(due,now)[-1]=='）' else when(due,now)) if due else '截止：未確認',DRAFT_NOTE]
+    if item.get('url'):lines.append(item['url'])
+    return dict(text='\n'.join(lines),item=item.get('id'),draft=result,submitted=False)
+
+
+def allowed_file(path,roots):
+    try:target=Path(path).resolve(strict=True)
+    except (OSError,RuntimeError):return False
+    return target.is_file() and target.suffix.lower() in {'.pdf','.docx','.doc','.zip','.txt','.md'} and any(target.is_relative_to(Path(r).resolve()) for r in roots)
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     parser=argparse.ArgumentParser()

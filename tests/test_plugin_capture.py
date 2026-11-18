@@ -13,7 +13,8 @@ from workflow import AcademicWorkflow
 class Context:
     def __init__(self):self.hooks={};self.handler=None
     def register_hook(self,name,handler):self.hooks[name]=handler
-    def register_tool(self,**kwargs):self.handler=kwargs['handler']
+    def register_tool(self,**kwargs):
+        if kwargs['name']=='academic_workflow':self.handler=kwargs['handler']
 
 
 class CaptureTests(unittest.TestCase):

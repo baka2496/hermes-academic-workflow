@@ -12,7 +12,7 @@ from academic import load,status,submit
 from native import NativeTasks
 
 
-ACADEMIC_TOPIC=r'學業|作業|考試|複習|讀書|課|教室|考場|公告|老師|待辦|最近有什麼|有什麼事|重要的事|期限|截止|題目|講義|附件|考卷|HW|hw|Quiz|quiz'
+ACADEMIC_TOPIC=r'學業|作業|考試|複習|讀書|課|教室|考場|公告|老師|待辦|最近有什麼|有什麼事|重要的事|期限|截止|題目|講義|附件|考卷|HW|hw|Quiz|quiz|繳交|上傳|草稿'
 # "傳相對論 HW#3 的題目給我" matched none of these, so the bot never heard of action=attachment; a
 # course name alone is also an academic question.
 
@@ -29,6 +29,9 @@ COURSE_RULE=('問某門課的上課地點、教室、公告、老師說了什麼
              '要題目、講義、附件或檔案時用 action=attachment、key=課名、text=作業或公告名稱，'
              '照它回的 files 每個檔案一行寫 MEDIA:路徑傳給本人，直接傳檔，不要先讀檔或轉文字（題目常是掃描檔）；工具回錯誤就照實說失敗，不要說已接單或另派別人。'
              # 11/18 smoke test: a pre-send agent_preferences review on every lookup made one answer take 60 s.
+             # 11/19: the owner sent a photo of a finished derivation and wanted it handed in.
+             '本人要把照片或檔案交到作業（交、繳交、上傳、存草稿）時用 action=draft、key=課名、text=作業名稱、files=[圖片路徑]，'
+             '照它回的 text 回覆；它只存草稿，一定要講「還沒正式繳交，請到 TronClass 按繳交作業」，絕不能說已繳交。'
              'brief、course、attachment 這類查詢直接回覆，不需要 agent_preferences review 或 tool_describe。')
 # "傳題目給我": kanban_create failed, the bot still answered "已接單" and then searched files for
 # minutes, reading another profile's auth.json. Commander never needs credential files.
@@ -65,6 +68,10 @@ def current_worker_task():
 def register(ctx):
     config,workflow=load(Path(__file__).with_name('config.json'))
     human_turns=OrderedDict();lock=RLock()
+    import vision
+    # Photos are cached under the profile; the owner often sends the photo, then the question.
+    image_roots=[Path(config.get('hermes_root',''))/'profiles/commander/cache'] if config.get('hermes_root') else []
+    recent_images={};looker=vision.Looker(image_roots)
     def pre_llm_call(session_id='',turn_id='',user_message='',platform='',conversation_history=None,**kwargs):
         history=conversation_history or []
         current=history[-1] if history and isinstance(history[-1],dict) else {}
@@ -80,12 +87,24 @@ def register(ctx):
                 if key[0]==session_id or now-human_turns[key][1]>21600:human_turns.pop(key,None)
             if human:human_turns[(session_id,turn_id)]=(user_message,now)
             while len(human_turns)>256:human_turns.popitem(last=False)
+        context=''
+        with lock:
+            found=vision.image_paths(str(user_message))
+            if found:recent_images[session_id]=(found,time.monotonic())
+            elif session_id in recent_images and time.monotonic()-recent_images[session_id][1]<=1800:found=recent_images[session_id][0]
+        # 11/19 live test: plugin tools are deferred behind tool_search, so the model never saw
+        # view_image, tried read_file on the JPEG and again said it had no way to see pictures.
+        # Looking at the photo here does not depend on the model finding the tool.
+        if found:context+=looker.context(found,str(user_message))
         if academic_question(workflow,str(user_message)):
             agenda=workflow.agenda()
-            context='學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項。'+BRIEF_RULE+COURSE_RULE
+            context+='學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項。'+BRIEF_RULE+COURSE_RULE
             if getattr(platform,'value',platform)=='telegram':context+=PHONE_FORMAT
-            return {'context':context}
-        return None
+        return {'context':context} if context else None
+    def view_image(args,**kwargs):
+        try:return json.dumps(looker.result(args.get('path',''),args.get('question',''))
+            or {'error':'timeout','message':'看圖逾時，請稍後再傳一次。'},ensure_ascii=False)
+        except Exception as exc:return json.dumps({'error':type(exc).__name__,'message':'看圖失敗，請稍後再傳一次。'},ensure_ascii=False)
     def handler(args,session_id='',**kwargs):
         try:
             action=args['action']
@@ -99,6 +118,11 @@ def register(ctx):
             elif action=='attachment':
                 import brief
                 result=brief.attachment(config,workflow,args.get('key',''),args.get('text',''))
+            elif action=='draft':
+                import brief
+                files=args.get('files') or []
+                if isinstance(files,str):files=[files]
+                result=brief.draft(config,workflow,args.get('key',''),args.get('text',''),files,roots=image_roots)
             elif action=='source':
                 result=next((x for x in workflow.inbox_items() if x['key']==args.get('key')),{'error':'source_not_found'})
             elif action=='submit':result=submit(config,workflow,args['task_id'])
@@ -131,10 +155,16 @@ def register(ctx):
     def post_llm_call(session_id='',turn_id='',**kwargs):
         with lock:human_turns.pop((session_id,turn_id),None)
     ctx.register_tool(name='academic_workflow',toolset='skills',schema={
-        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
+        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；draft=把本人傳的照片／檔案存成 TronClass 作業草稿（key=課名，text=作業名稱，files=圖片路徑；只存草稿，本人自己按繳交）；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
         'parameters':{'type':'object','required':['action'],'properties':{
-            'action':{'type':'string','enum':['brief','course','attachment','status','source','capture','submit']},'key':{'type':'string'},
+            'action':{'type':'string','enum':['brief','course','attachment','draft','status','source','capture','submit']},'key':{'type':'string'},
+            'files':{'type':'array','items':{'type':'string'},'description':'draft：要上傳的圖片或檔案路徑（訊息裡 image_url: 後面的路徑）'},
             'text':{'type':'string','description':'capture：本輪本人要記下的學業事項原文；attachment：作業或公告名稱，例如 HW#3'},'task_id':{'type':'string'}}}},handler=handler)
+    ctx.register_tool(name='view_image',toolset='skills',schema={
+        'name':'view_image','description':'看本人傳來的照片或截圖：打開 Hermes 暫存的圖片檔，抄出上面的文字、算式與數據。本人傳圖時一定先用它，不要說沒收到圖片。',
+        'parameters':{'type':'object','required':['path'],'properties':{
+            'path':{'type':'string','description':'圖片路徑（訊息裡 image_url: 後面的路徑）'},
+            'question':{'type':'string','description':'本人想從圖裡知道什麼'}}}},handler=view_image)
     ctx.register_hook('pre_llm_call',pre_llm_call)
     ctx.register_hook('pre_tool_call',pre_tool_call)
     ctx.register_hook('post_llm_call',post_llm_call)
