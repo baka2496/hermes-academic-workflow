@@ -112,6 +112,7 @@ def course(workflow,name,*,now=None,announcements=3):
     clock=datetime.fromisoformat(now) if now else datetime.now().astimezone()
     wanted=bare(re.sub(r'課$','',(name or '').strip()))
     items=workflow.inbox_items()
+    raw={x.get('key'):x for x in items}
     names=sorted({x.get('course') for x in items if x.get('course')})
     matched=[n for n in names if wanted and (wanted in bare(n) or bare(n) in wanted)]
     if not matched:
@@ -133,7 +134,50 @@ def course(workflow,name,*,now=None,announcements=3):
             for item in sorted(open_items,key=lambda x:x.get('due_at') or '9999')[:5]:
                 due=datetime.fromisoformat(item['due_at']) if item.get('due_at') else None
                 lines.append('• '+short(item.get('title'),14)+'｜'+(when(due,clock) if due else '日期待確認'))
+                # The question sheet of "HW#3" is its PDF; without the name the bot went hunting for it.
+                for file in files_of(raw.get(item['key'],{})):lines.append('  📎 '+file['name'])
     return dict(text='\n'.join(lines),matched=matched,checked_at=checked)
+
+
+def files_of(item):
+    return [x for x in ((item.get('source_requirements') or {}).get('attachments') or [])
+        if isinstance(x,dict) and x.get('id') and x.get('name') and not x.get('deleted')]
+
+
+def attachment(config,workflow,name,title='',*,run=None,now=None):
+    """Download a course item's TronClass attachments (a homework's question sheet, lecture notes) and
+    return their local paths. "傳題目給我" took over five minutes of searching files and a failed hand-off
+    although the file name was already stored; the TronClass CLI fetches it in about three seconds."""
+    import subprocess
+    found=course(workflow,name,now=now)
+    if not found['matched']:return dict(text=found['text'],files=[])
+    candidates=[x for x in workflow.inbox_items() if x.get('course') in found['matched'] and files_of(x) and not x.get('closed')]
+    wanted=re.sub(r'[\s#＃]','',title or '').lower()
+    if wanted:candidates=[x for x in candidates if wanted in re.sub(r'[\s#＃]','',(x.get('title') or '')+' '.join(f['name'] for f in files_of(x))).lower()]
+    else:
+        # No title: the open homework due first, else the newest post with files.
+        open_keys={x['key'] for x in workflow.agenda(now=now) if x.get('human_state')=='open'}
+        homework=sorted((x for x in candidates if x.get('kind')=='homework' and x.get('key') in open_keys),key=lambda x:x.get('due_at') or '9999')
+        candidates=homework[:1] or sorted(candidates,key=lambda x:x.get('published_at') or '',reverse=True)[:1]
+    if not candidates:
+        return dict(text='「'+(name or '')+(' '+title if title else '')+'」在 TronClass 紀錄裡沒有附件（未確認是否只在課堂發放）。',files=[])
+    item=candidates[0]
+    folder=Path(config.get('state_dir') or workflow.root)/'attachments'/re.sub(r'[^0-9A-Za-z_-]','_',item.get('id') or item['key'])
+    folder.mkdir(parents=True,exist_ok=True)
+    cli=Path(config['tronclass_repo'])/'.venv/Scripts/fjumcp.exe'
+    run=run or (lambda args:subprocess.run(args,capture_output=True,timeout=90,env=dict(__import__('os').environ,PYTHONIOENCODING='utf-8',PYTHONUTF8='1')))
+    files,failed=[],[]
+    for file in files_of(item):
+        target=folder/Path(file['name']).name
+        if not (target.exists() and (not file.get('size') or target.stat().st_size==file['size'])):
+            try:run([str(cli),'download','upload',str(file['id']),'-d',str(folder)])
+            except Exception:pass
+        if target.exists() and target.stat().st_size>0:files.append(str(target))
+        else:failed.append(file['name'])
+    lines=['📎 '+(item.get('course') or '')+' '+(item.get('title') or '')+'：'+str(len(files))+' 個檔案']
+    if failed:lines.append('⚠️ 下載失敗：'+'、'.join(failed)+'（TronClass 登入可能過期）')
+    return dict(text='\n'.join(lines),files=files,failed=failed,item=item['key'],
+        reply='回覆時每個檔案單獨一行寫 MEDIA:檔案路徑，檔案就會傳到 Telegram。')
 
 
 def main():

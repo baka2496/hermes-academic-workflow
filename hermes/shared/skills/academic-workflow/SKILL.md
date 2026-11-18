@@ -7,7 +7,7 @@ description: "學業總待辦、期限與自動準備工作：讀取共同進度
 
 ## 本人詢問學業或新增待辦
 
-問近況（最近／目前有什麼事、待辦）時用 `academic_workflow(action="brief")`，一句結論後逐行貼上它的 `text`，不刪項、不改日期。問某門課的上課地點、公告或作業時用 `academic_workflow(action="course", key="課名")`，不要搜尋檔案或讀 log。問單一事項細節時用 `academic_workflow(action="status")` 查同一份學業紀錄，按已知期限與本人下一步回覆。只說已確認的查詢範圍；來源不完整時明說。本人要求記下一件學業事情時用 `capture` 保存本輪原話。這些簡單操作不再拆一串覆核工作。
+問近況（最近／目前有什麼事、待辦）時用 `academic_workflow(action="brief")`，一句結論後逐行貼上它的 `text`，不刪項、不改日期。問某門課的上課地點、公告或作業時用 `academic_workflow(action="course", key="課名")`，不要搜尋檔案或讀 log。要題目、講義或附件時用 `academic_workflow(action="attachment", key="課名", text="作業或公告名稱")`，把回傳的每個檔案用一行 `MEDIA:路徑` 傳出；工具失敗就照實說，不要說已接單或另派別人。問單一事項細節時用 `academic_workflow(action="status")` 查同一份學業紀錄，按已知期限與本人下一步回覆。只說已確認的查詢範圍；來源不完整時明說。本人要求記下一件學業事情時用 `capture` 保存本輪原話。這些簡單操作不再拆一串覆核工作。
 
 ## 接到 `[academic-workflow:v1]` 準備卡
 
