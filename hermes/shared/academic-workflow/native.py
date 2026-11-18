@@ -37,6 +37,30 @@ def resolve_payload(configured):
     raise FileNotFoundError('Hermes agent-payload not found; set hermes_payload in config.json')
 
 
+def stale_gateways(installed=None,processes=None):
+    """Running Hermes gateways whose program folder is gone or older than the installed app.
+    The Store app updated underneath the running gateway on 11/18; kanban_create then failed with
+    "No module named hermes_cli.kanban_pr_acceptance" until someone restarted it."""
+    if processes is None:
+        try:
+            import psutil
+            processes=[]
+            for proc in psutil.process_iter(['exe','cmdline']):
+                line=' '.join(proc.info.get('cmdline') or [])
+                if 'hermes_cli.main' in line and ' gateway' in line and proc.info.get('exe'):processes.append(proc.info['exe'])
+        except Exception:return []
+    stale=[]
+    newest=None
+    for exe in processes:
+        parts=Path(exe).parts
+        if 'agent-payload' not in parts:continue
+        payload=Path(*parts[:parts.index('agent-payload')+1])
+        if not (payload/'hermes-agent').is_dir():stale.append(str(payload));continue
+        if newest is None:newest=(installed if installed is not None else installed_payloads()) or ['']
+        if newest[0] and Path(newest[0]).resolve()!=payload.resolve():stale.append(str(payload))
+    return stale
+
+
 def bootstrap(config):
     # Resolve extension modules from this interpreter before Hermes exposes its bundled site path.
     import pydantic,pydantic_core,openai,jiter,psutil

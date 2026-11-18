@@ -600,6 +600,21 @@ class AttachmentTests(unittest.TestCase):
         older=brief.attachment(self.config,self.workflow,'相對論','hw2',run=self.run,now='2026-11-18T16:53:00+08:00')
         self.assertEqual([Path(x).name for x in older['files']],['1151RelHW2.pdf'])
 
+    def test_exact_title_beats_a_longer_similar_one(self):
+        import brief
+        rows=[dict(id='announcement:1:'+str(n),kind='announcement',course='半導體物理導論',title=t,published_at='2026-09-2'+str(n),
+            source_requirements=dict(attachments=[dict(id=100+n,name=f)])) for n,(t,f) in enumerate([('20260923 上課講義 勘誤','v_rev1.pdf'),('20260923 上課講義','v.pdf')])]
+        self.workflow.ingest('tronclass','announcement',rows,complete=True)
+        def run(args):(Path(args[args.index('-d')+1])/{'100':'v_rev1.pdf','101':'v.pdf'}[args[3]]).write_bytes(b'%PDF-')
+        self.assertEqual(Path(brief.attachment(self.config,self.workflow,'半導體物理導論','20260923 上課講義',run=run)['files'][0]).name,'v.pdf')
+        self.assertEqual(Path(brief.attachment(self.config,self.workflow,'半導體物理導論','20260923 上課講義 勘誤',run=run)['files'][0]).name,'v_rev1.pdf')
+
+    def test_cli_does_not_inherit_hermes_python_path(self):
+        import brief
+        env=brief.cli_env({'PYTHONPATH':r'C:\hermesenv\Lib\site-packages','PYTHONHOME':'x','PATH':'p'})
+        self.assertNotIn('PYTHONPATH',env);self.assertNotIn('PYTHONHOME',env)
+        self.assertEqual(env['PATH'],'p');self.assertEqual(env['PYTHONIOENCODING'],'utf-8')
+
     def test_failed_download_is_reported_not_hidden(self):
         import brief
         result=brief.attachment(self.config,self.workflow,'相對論','HW#3',run=lambda args:None)
@@ -626,3 +641,24 @@ class AttachmentTests(unittest.TestCase):
         import plugin
         self.assertIn('action=attachment',plugin.COURSE_RULE)
         self.assertIn('不要說已接單',plugin.COURSE_RULE)
+
+
+class StaleGatewayTests(unittest.TestCase):
+    """11/18: Hermes updated under the running gateway and kanban_create failed until a restart."""
+    def test_gateway_running_from_a_removed_or_older_payload_is_reported(self):
+        from native import stale_gateways
+        root=fixture_root()
+        new=root/'Hermes_2'/'app/resources/agent-payload';(new/'hermes-agent').mkdir(parents=True)
+        old=root/'Hermes_1'/'app/resources/agent-payload';(old/'hermes-agent').mkdir(parents=True)
+        gone=str(root/'Hermes_0'/'app/resources/agent-payload'/'tools'/'python.exe')
+        exe=lambda p:str(p/'tools'/'python.exe')
+        self.assertEqual(stale_gateways(installed=[str(new)],processes=[exe(new)]),[])
+        self.assertEqual(len(stale_gateways(installed=[str(new)],processes=[exe(old)])),1)
+        self.assertEqual(len(stale_gateways(installed=[str(new)],processes=[gone])),1)
+
+    def test_stale_gateway_alerts_after_ten_minutes(self):
+        workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8}
+        self.assertEqual(prepare_health(workflow,config,now='2026-11-18T17:00:00+08:00',gateways=['old'])['state'],'unchanged')
+        self.assertEqual(prepare_health(workflow,config,now='2026-11-18T17:10:00+08:00',gateways=['old'])['state'],'prepared')
+        transport=sent_ok();workflow.publish(transport,now='2026-11-18T17:10:00+08:00',kinds={'health'})
+        self.assertIn('hermes gateway restart',transport.texts[0])

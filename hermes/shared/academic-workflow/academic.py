@@ -160,6 +160,9 @@ def doctor(config,workflow,*,probe=True):
     problem=delivery_problem(workflow)
     if config.get('delivery_enabled'):
         check('delivery_recent',not problem,(problem or '')+'；修好後執行 academic.py telegram-test',required=False)
+    from native import stale_gateways
+    stale=stale_gateways()
+    check('gateway_current',not stale,'機器人還在跑舊版 Hermes（'+'、'.join(stale)+'）；執行 hermes gateway restart',required=False)
     if probe and config.get('delivery_enabled'):
         # The scheduler runs this code AS commander with a secret-free environment; probing from a
         # shell succeeds even when that setup cannot find the bot token, so re-check in that setup.

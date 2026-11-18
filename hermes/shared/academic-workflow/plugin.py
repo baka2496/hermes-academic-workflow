@@ -27,7 +27,9 @@ def academic_question(workflow,text):
 COURSE_RULE=('問某門課的上課地點、教室、公告、老師說了什麼、這門課有什麼作業時，用 action=course、key=課名，'
              '照它的資料回答；不要搜尋檔案、讀 log 或其他機器人的資料庫。查不到就說未確認。'
              '要題目、講義、附件或檔案時用 action=attachment、key=課名、text=作業或公告名稱，'
-             '照它回的 files 每個檔案一行寫 MEDIA:路徑傳給本人，直接傳檔，不要先讀檔或轉文字（題目常是掃描檔）；工具回錯誤就照實說失敗，不要說已接單或另派別人。')
+             '照它回的 files 每個檔案一行寫 MEDIA:路徑傳給本人，直接傳檔，不要先讀檔或轉文字（題目常是掃描檔）；工具回錯誤就照實說失敗，不要說已接單或另派別人。'
+             # 11/18 smoke test: a pre-send agent_preferences review on every lookup made one answer take 60 s.
+             'brief、course、attachment 這類查詢直接回覆，不需要 agent_preferences review 或 tool_describe。')
 # "傳題目給我": kanban_create failed, the bot still answered "已接單" and then searched files for
 # minutes, reading another profile's auth.json. Commander never needs credential files.
 SECRET_PATH=re.compile(r'auth\.json|\.env\b|credentials|secrets?\.(json|ya?ml|txt)|\.session\b|cookies?\.(json|txt|sqlite)',re.I)

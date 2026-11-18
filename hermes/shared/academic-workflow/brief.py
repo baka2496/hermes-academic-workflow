@@ -144,6 +144,17 @@ def files_of(item):
         if isinstance(x,dict) and x.get('id') and x.get('name') and not x.get('deleted')]
 
 
+def cli_env(base=None):
+    """Environment for the TronClass CLI's own interpreter. Inside the gateway PYTHONPATH points at
+    Hermes's site-packages, and the CLI then crashed importing Hermes's pydantic_core (11/18: every
+    download from Telegram failed while the same command worked from a shell)."""
+    import os
+    env={k:v for k,v in (os.environ if base is None else base).items()
+        if k.upper() not in {'PYTHONPATH','PYTHONHOME','VIRTUAL_ENV','PYTHONSTARTUP','PYTHONNOUSERSITE'}}
+    env.update(PYTHONIOENCODING='utf-8',PYTHONUTF8='1',NO_COLOR='1',TERM='dumb')
+    return env
+
+
 def attachment(config,workflow,name,title='',*,run=None,now=None):
     """Download a course item's TronClass attachments (a homework's question sheet, lecture notes) and
     return their local paths. "傳題目給我" took over five minutes of searching files and a failed hand-off
@@ -152,8 +163,12 @@ def attachment(config,workflow,name,title='',*,run=None,now=None):
     found=course(workflow,name,now=now)
     if not found['matched']:return dict(text=found['text'],files=[])
     candidates=[x for x in workflow.inbox_items() if x.get('course') in found['matched'] and files_of(x) and not x.get('closed')]
-    wanted=re.sub(r'[\s#＃]','',title or '').lower()
-    if wanted:candidates=[x for x in candidates if wanted in re.sub(r'[\s#＃]','',(x.get('title') or '')+' '.join(f['name'] for f in files_of(x))).lower()]
+    wanted=re.sub(r'[\s#＃【】「」]','',title or '').lower()
+    norm=lambda text:re.sub(r'[\s#＃【】「」]','',text or '').lower()
+    if wanted:
+        candidates=[x for x in candidates if wanted in norm((x.get('title') or '')+' '.join(f['name'] for f in files_of(x)))]
+        # "20260923 上課講義" also matches "20260923 上課講義 勘誤": the exact title, else the shortest, wins.
+        candidates.sort(key=lambda x:(norm(x.get('title'))!=wanted,len(norm(x.get('title')))))
     else:
         # No title: the open homework due first, else the newest post with files.
         open_keys={x['key'] for x in workflow.agenda(now=now) if x.get('human_state')=='open'}
@@ -165,18 +180,27 @@ def attachment(config,workflow,name,title='',*,run=None,now=None):
     folder=Path(config.get('state_dir') or workflow.root)/'attachments'/re.sub(r'[^0-9A-Za-z_-]','_',item.get('id') or item['key'])
     folder.mkdir(parents=True,exist_ok=True)
     cli=Path(config['tronclass_repo'])/'.venv/Scripts/fjumcp.exe'
-    run=run or (lambda args:subprocess.run(args,capture_output=True,timeout=90,env=dict(__import__('os').environ,PYTHONIOENCODING='utf-8',PYTHONUTF8='1')))
+    # The CLI prints "✓" with rich; under a cp950 console that crashes unless output is UTF-8.
+    run=run or (lambda args:subprocess.run(args,capture_output=True,timeout=90,cwd=str(cli.parent.parent.parent),
+        env=cli_env(),
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+    errors=[]
     files,failed=[],[]
     for file in files_of(item):
         target=folder/Path(file['name']).name
         if not (target.exists() and (not file.get('size') or target.stat().st_size==file['size'])):
-            try:run([str(cli),'download','upload',str(file['id']),'-d',str(folder)])
-            except Exception:pass
+            try:
+                done=run([str(cli),'download','upload',str(file['id']),'-d',str(folder)])
+                code=getattr(done,'returncode',0)
+                if code:errors.append(file['name']+': exit '+str(code)+' '+(getattr(done,'stderr',b'') or b'')[-300:].decode('utf-8','replace'))
+            except Exception as exc:errors.append(file['name']+': '+type(exc).__name__+' '+str(exc)[:200])
         if target.exists() and target.stat().st_size>0:files.append(str(target))
         else:failed.append(file['name'])
     lines=['📎 '+(item.get('course') or '')+' '+(item.get('title') or '')+'：'+str(len(files))+' 個檔案']
     if failed:lines.append('⚠️ 下載失敗：'+'、'.join(failed)+'（TronClass 登入可能過期）')
-    return dict(text='\n'.join(lines),files=files,failed=failed,item=item['key'],
+    if failed and errors:
+        import logging;logging.getLogger(__name__).warning('attachment download failed: %s',' | '.join(errors))
+    return dict(text='\n'.join(lines),files=files,failed=failed,errors=errors if failed else [],item=item['key'],
         reply='回覆時每個檔案單獨一行寫 MEDIA:檔案路徑，檔案就會傳到 Telegram。')
 
 
