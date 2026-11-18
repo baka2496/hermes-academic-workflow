@@ -260,11 +260,15 @@ HINTS={
     'interpretation':'公告／信件解析服務連續失敗；請檢查 commander 的模型授權或額度，24 小時後會自動重試。',
     'verification':'產物驗證服務連續失敗；請檢查 commander 的模型授權或額度，24 小時後會自動重試。',
     'worker':'背景準備卡因授權或非暫時性錯誤停住；請檢查 hermes-agent 的模型授權，再於看板解除封鎖。',
+    'gateway':'Hermes 已自動更新，但機器人還在跑舊版，派工等功能會出錯；請在電腦執行 hermes gateway restart。',
 }
+# A stale gateway breaks features immediately; do not wait the two hours used for flaky sources.
+FAST_ALERT={'gateway':10}
 
 
-def health_problems(workflow,*,recovery=(),preparation=True):
+def health_problems(workflow,*,recovery=(),preparation=True,gateways=()):
     problems={}
+    if gateways:problems['gateway']=list(gateways)
     for source in workflow.sources():
         if source['source']=='tronclass' and source['scope']=='collector' and not source['complete']:
             problems['tronclass']=source['errors']
@@ -281,11 +285,14 @@ def health_problems(workflow,*,recovery=(),preparation=True):
     return problems
 
 
-def prepare_health(workflow,config,*,now=None,recovery=()):
+def prepare_health(workflow,config,*,now=None,recovery=(),gateways=None):
     """Queue one Telegram alert when infrastructure stays broken, and one when it recovers."""
     clock=datetime.fromisoformat(iso(now))
     threshold=timedelta(minutes=int(config.get('health_alert_after_minutes',120)))
-    problems=health_problems(workflow,recovery=recovery,preparation=config.get('preparation_enabled',True) is not False)
+    if gateways is None:
+        from native import stale_gateways
+        gateways=stale_gateways() if config.get('hermes_root') and config.get('check_gateway',True) else []
+    problems=health_problems(workflow,recovery=recovery,preparation=config.get('preparation_enabled',True) is not False,gateways=gateways)
     since=workflow.meta_items('health_since:')
     for key in since:
         if key.split(':',1)[1] not in problems:workflow.delete_meta(key)
@@ -293,7 +300,7 @@ def prepare_health(workflow,config,*,now=None,recovery=()):
     for name in sorted(problems):
         first=since.get('health_since:'+name)
         if not first:workflow.set_meta('health_since:'+name,clock.isoformat());first=clock.isoformat()
-        if clock-datetime.fromisoformat(first)>=threshold:persistent.append(name)
+        if clock-datetime.fromisoformat(first)>=(timedelta(minutes=FAST_ALERT[name]) if name in FAST_ALERT else threshold):persistent.append(name)
     alerted=workflow.get_meta('health_alerted',[]) or []
     if persistent==alerted:return {'state':'unchanged','problems':persistent}
     if not persistent and set(alerted)&set(problems):return {'state':'unchanged','problems':persistent}
@@ -304,7 +311,7 @@ def prepare_health(workflow,config,*,now=None,recovery=()):
     lines=['🩺 小居學業工作流狀態']
     for name in persistent:lines.append('• '+HINTS[name])
     resolved=[x for x in alerted if x not in persistent]
-    if resolved:lines.append('已恢復：'+'、'.join({'tronclass':'TronClass','gmail':'Gmail','interpretation':'解析服務','verification':'驗證服務','worker':'背景準備'}.get(x,x) for x in resolved)+'。')
+    if resolved:lines.append('已恢復：'+'、'.join({'tronclass':'TronClass','gmail':'Gmail','interpretation':'解析服務','verification':'驗證服務','worker':'背景準備','gateway':'機器人版本'}.get(x,x) for x in resolved)+'。')
     if not persistent:lines.append('目前所有來源與服務恢復正常。')
     key='health:'+digest(persistent)+':'+clock.isoformat()
     payload=dict(type='health',title='學業工作流狀態',message='\n'.join(lines),artifacts=[],signature=persistent)
