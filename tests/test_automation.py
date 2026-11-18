@@ -565,3 +565,64 @@ class ClearDigestTests(unittest.TestCase):
         workflow.ingest('tronclass','exam',[dict(exam,due_at='2026-11-16T16:40:00+08:00')],complete=True)
         moved=prepare_digest(workflow,{'daily_hour':8},now='2026-11-16T12:05:00+08:00')
         self.assertEqual(moved['state'],'prepared')
+
+
+class AttachmentTests(unittest.TestCase):
+    """Owner, 11/18: "傳題目給我" for 相對論 HW#3 took minutes; the PDF name was already stored."""
+    def setUp(self):
+        self.workflow=AcademicWorkflow(fixture_root())
+        files=[dict(id=38057734,name='1151RelHW3.pdf',size=5,allow_download=True)]
+        self.workflow.ingest('tronclass','homework',[
+            dict(id='homework:394632:3208459',kind='homework',title='HW#3',course='相對論',due_at='2026-11-20T23:59:00+08:00',submitted=False,closed=False,
+                 source_requirements=dict(attachments=files,title='HW#3',description='')),
+            dict(id='homework:394632:1',kind='homework',title='HW#2',course='相對論',due_at='2026-11-01T23:59:00+08:00',submitted=True,closed=False,
+                 source_requirements=dict(attachments=[dict(id=1,name='1151RelHW2.pdf',size=5)]))],complete=True)
+        self.calls=[]
+        def run(args):
+            self.calls.append(args);dest=Path(args[args.index('-d')+1])
+            names={'38057734':'1151RelHW3.pdf','1':'1151RelHW2.pdf'}
+            (dest/names[args[3]]).write_bytes(b'%PDF-')
+        self.run=run
+        self.config={'tronclass_repo':str(self.workflow.root/'tc')}
+
+    def test_course_view_names_the_question_file(self):
+        import brief
+        self.assertIn('📎 1151RelHW3.pdf',brief.course(self.workflow,'相對論',now='2026-11-18T16:51:00+08:00')['text'])
+
+    def test_open_homework_file_is_downloaded_once_and_returned_for_media(self):
+        import brief
+        first=brief.attachment(self.config,self.workflow,'相對論',run=self.run,now='2026-11-18T16:52:00+08:00')
+        self.assertEqual([Path(x).name for x in first['files']],['1151RelHW3.pdf'])
+        self.assertIn('MEDIA:',first['reply'])
+        again=brief.attachment(self.config,self.workflow,'相對論','HW#3',run=self.run,now='2026-11-18T16:53:00+08:00')
+        self.assertEqual(again['files'],first['files'])
+        self.assertEqual(len(self.calls),1)
+        older=brief.attachment(self.config,self.workflow,'相對論','hw2',run=self.run,now='2026-11-18T16:53:00+08:00')
+        self.assertEqual([Path(x).name for x in older['files']],['1151RelHW2.pdf'])
+
+    def test_failed_download_is_reported_not_hidden(self):
+        import brief
+        result=brief.attachment(self.config,self.workflow,'相對論','HW#3',run=lambda args:None)
+        self.assertEqual(result['files'],[])
+        self.assertIn('下載失敗',result['text'])
+
+    def test_commander_cannot_read_credential_files(self):
+        import plugin
+        ctx=type('Ctx',(),{'hooks':{},'register_hook':lambda s,n,h:s.hooks.__setitem__(n,h),'register_tool':lambda s,**k:None})()
+        with patch.object(plugin,'load',return_value=({},self.workflow)):plugin.register(ctx)
+        hook=ctx.hooks['pre_tool_call']
+        self.assertEqual(hook(tool_name='read_file',args={'path':'C:/Users/x/hermes/profiles/tronclass/auth.json'})['action'],'block')
+        self.assertEqual(hook(tool_name='terminal',args={'command':r'type profiles\commander\.env'})['action'],'block')
+        self.assertIsNone(hook(tool_name='read_file',args={'path':'C:/x/academic-state/attachments/a/1151RelHW3.pdf'}))
+        self.assertIsNone(hook(tool_name='terminal',args={'command':'echo max_tokens'}))
+
+    def test_question_without_keywords_still_gets_the_rules(self):
+        import plugin
+        self.assertTrue(plugin.academic_question(self.workflow,'傳相對論 HW#3 的題目給我'))
+        self.assertTrue(plugin.academic_question(self.workflow,'相對論在哪'))
+        self.assertFalse(plugin.academic_question(self.workflow,'今天天氣如何'))
+
+    def test_attachment_rule_reaches_the_bot(self):
+        import plugin
+        self.assertIn('action=attachment',plugin.COURSE_RULE)
+        self.assertIn('不要說已接單',plugin.COURSE_RULE)
