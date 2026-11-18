@@ -29,8 +29,12 @@ STATE=HERMES/'shared/academic-state/academic.db'
 CHAT=HERMES/'profiles/commander/state.db'
 SESSION=r'C:\Users\shiro\tools\telegram-mcp-private\academic-test'
 # Read-only helpers; speed is checked by the time limit instead.
-ALLOWED_TOOLS={'academic_workflow','tool_search','tool_describe','tool_call','memory','session_search','agent_preferences'}
+ALLOWED_TOOLS={'academic_workflow','view_image','tool_search','tool_describe','tool_call','memory','session_search','agent_preferences'}
 HANDOFF=re.compile(r'已接單|派專員|派人|稍後(傳|回覆|提供)|正在(前往|取得|處理)')
+# A photo of handwritten work (kept on this PC, not in the public repo): 11/18 the bot said
+# "圖片沒傳進來" for it twice.
+PHOTO=HERMES/'shared/academic-state/fixtures/derivation.jpg'
+DENIAL=re.compile(r'看不到|沒(有)?收到|沒(有)?(成功)?傳進來|重傳|讀不到|沒有.{0,6}看圖')
 LIMIT=40 # seconds; the PDF took 11–15 s on 11/18, the five-minute failure is what this guards
 
 
@@ -62,7 +66,10 @@ def cases(now):
             return '回答少了：'+'、'.join(missing) if missing else None
         return check
     if rel:
-        due=datetime.fromisoformat(rel[0]['due_at']).strftime('%m/%d').lstrip('0').replace('/0','/')
+        # brief.when writes 今天/明天 for the next two days, a date otherwise (11/19 run: "明天23:59" was right).
+        when=datetime.fromisoformat(rel[0]['due_at']).astimezone(now.tzinfo)
+        days=(when.date()-now.date()).days
+        due='今天' if days==0 else '明天' if days==1 else when.strftime('%m/%d').lstrip('0').replace('/0','/')
         result.append(dict(name='列出某課作業',send='給我相對論的作業',expect='text',check=mentions(rel[0]['title'],due)))
     if with_file:
         f=files(with_file[0])[0]
@@ -87,12 +94,18 @@ def cases(now):
         if not re.search(r'找不到|沒有|未確認|不在',r['text']):return '沒有說找不到這門課'
     result.append(dict(name='不存在的課',send=fake+'有什麼作業',expect='text',check=unknown))
     result.append(dict(name='近況清單',send='最近有什麼事',expect='text',check=mentions('📚')))
+    if PHOTO.exists():
+        def sees(r):
+            if DENIAL.search(r['text']):return '說看不到圖片'
+            if not re.search(r'勞侖茲|洛倫茲|Lorentz|電磁場',r['text']):return '沒有說出圖上在算勞侖茲變換'
+        result.append(dict(name='傳照片問內容',send='這張在算什麼？',photo=str(PHOTO),expect='text',check=sees,seconds=60))
     return result
 
 
 def limit(case):
     size=(case.get('file') or {}).get('size') or 0
-    return LIMIT+int(size/1_000_000*6)
+    # A photo is transcribed (~20 s) before the model answers.
+    return case.get('seconds') or LIMIT+int(size/1_000_000*10)
 
 
 def tools_used(since):
@@ -110,7 +123,7 @@ def tools_used(since):
 
 async def ask(client,case):
     started=time.time()
-    sent=await client.send_message(BOT,case['send'])
+    sent=await (client.send_file(BOT,case['photo'],caption=case['send']) if case.get('photo') else client.send_message(BOT,case['send']))
     replies=[];last=None
     while time.time()-started<limit(case)+60:
         await asyncio.sleep(2)
@@ -121,7 +134,9 @@ async def ask(client,case):
             if replies and time.time()-last>=6:break
         # Telegram uploads ~5 MB lecture notes in about 25 s after the text; give the file until its
         # limit before treating a text-only answer (e.g. an honest "下載失敗") as final.
-        elif replies and time.time()-started>=limit(case) and time.time()-last>=6:break
+        # 11/19 run: a 4.9 MB file reached Telegram 80 s after the text; moving on early made it land in
+        # the next case and the bot treated the next question as a correction of the running turn.
+        elif replies and time.time()-started>=limit(case)+60 and time.time()-last>=6:break
     replies=sorted(replies,key=lambda m:m.id)
     first_useful=next((m for m in replies if (m.file if case['expect']=='document' else m.raw_text)),None)
     seconds=round((first_useful.date.timestamp() if first_useful else time.time())-sent.date.timestamp())
