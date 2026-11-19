@@ -205,6 +205,11 @@ async def main():
     from telethon import TelegramClient
     parser=argparse.ArgumentParser();parser.add_argument('--out',default='test-screenshots');parser.add_argument('--only')
     args=parser.parse_args()
+    # 11/19: a commander-only restart left the old plugin loaded; a live run would test old code.
+    sys.path.insert(0,str(HERMES/'shared/academic-workflow'))
+    from native import plugin_newer_than_gateway
+    changed=plugin_newer_than_gateway(HERMES/'shared/academic-workflow')
+    if changed:sys.exit('機器人還在用舊版程式（'+'、'.join(changed)+' 在它啟動後改過）：先執行 hermes gateway restart（不要加 -p）')
     def env(name):
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,'Environment') as key:return winreg.QueryValueEx(key,name)[0]
     client=TelegramClient(SESSION,int(env('TELEGRAM_API_ID')),env('TELEGRAM_API_HASH'))
