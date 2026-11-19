@@ -261,8 +261,15 @@ def draft(config,workflow,name,title,paths,*,roots=(),run=None,now=None):
     if not result.get('ok'):
         import logging;logging.getLogger(__name__).warning('draft upload failed: %s',result)
         return dict(error='upload_failed',text='❌ '+label+' 草稿上傳失敗（'+str(result.get('message') or result.get('error'))[:120]+'），TronClass 上沒有變更或只上傳了一部分，請到作業頁確認。')
-    lines=['✅ 已存成 '+label+' 的草稿（'+str(len(result.get('added') or []))+' 個檔案'
-           +('，保留原本草稿的 '+str(result['kept'])+' 個' if result.get('kept') else '')+'）',
+    if not result.get('added') and result.get('already'):
+        # A resent photo already in the draft is not uploaded again (it would become HW3(1).jpg …).
+        head='✅ '+label+' 的草稿裡已經有這張，沒有重複上傳'
+    else:head=('✅ 已存成 '+label+' 的草稿（'+str(len(result.get('added') or []))+' 個檔案'
+           +('，保留原本草稿的 '+str(result['kept'])+' 個' if result.get('kept') else '')
+           +('，換掉內容相同的舊檔 '+'、'.join(result['replaced']) if result.get('replaced') else '')+'）')
+    lines=[head,
+           # TronClass renames a clash with the owner's file storage (HW3.jpg -> HW3(1).jpg); show what it kept.
+           *(['草稿裡的檔案：'+'、'.join(result['draft_files'])] if result.get('draft_files') else []),
            '截止：'+(when(due,now)+' '+due.strftime('%H:%M') if due and when(due,now)[-1]=='）' else when(due,now)) if due else '截止：未確認',DRAFT_NOTE]
     if item.get('url'):lines.append(item['url'])
     return dict(text='\n'.join(lines),item=item.get('id'),draft=result,submitted=False)

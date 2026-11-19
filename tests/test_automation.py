@@ -677,6 +677,21 @@ class StaleGatewayTests(unittest.TestCase):
         self.assertIn('hermes gateway restart',transport.texts[0])
 
 
+class ReloadTests(unittest.TestCase):
+    def test_changed_code_after_gateway_start_is_flagged(self):
+        # 11/19: "hermes -p commander gateway restart" only reconnects Telegram; the plugin stays as
+        # first loaded, so a fixed draft reply never reached the phone. Doctor must say so.
+        import tempfile,os
+        from native import plugin_newer_than_gateway
+        root=Path(tempfile.mkdtemp());(root/'brief.py').write_text('x=1',encoding='utf-8');(root/'notes.md').write_text('',encoding='utf-8')
+        started=time.time()-60
+        os.utime(root/'brief.py',(started-30,started-30))
+        self.assertEqual(plugin_newer_than_gateway(root,started=started),[])
+        os.utime(root/'brief.py',(started+30,started+30));os.utime(root/'notes.md',(started+30,started+30))
+        self.assertEqual(plugin_newer_than_gateway(root,started=started),['brief.py'])
+        self.assertEqual(plugin_newer_than_gateway(root,started=None,processes=[]),[]) # no gateway running
+
+
 class DraftTests(unittest.TestCase):
     """Owner, 11/19: sent a photo of a finished derivation and asked to hand it in on TronClass."""
     def setUp(self):
@@ -730,6 +745,26 @@ class DraftTests(unittest.TestCase):
     def test_draft_script_only_ever_saves_drafts(self):
         source=(Path(__file__).parents[1]/'hermes/shared/academic-workflow/tronclass_draft.py').read_text(encoding='utf-8')
         self.assertIn('is_draft=True',source);self.assertNotIn('is_draft=False',source)
+
+    def test_resent_photo_replaces_its_ugly_copy_and_new_names_never_clash(self):
+        # 11/19: the draft held img_920d149bd7b2.jpg; resending it must not add the same photo twice.
+        from tronclass_draft import plan
+        import brief
+        old=[dict(id=1,name='img_920d149bd7b2.jpg',size=124323),dict(id=2,name='HW3.jpg',size=5000)]
+        self.assertEqual(plan(old,[('HW3.jpg',124323)]),([2],['img_920d149bd7b2.jpg'],[],[(0,'HW3_2.jpg')]))
+        self.assertEqual(plan([],[('HW3.jpg',1)]),([],[],[],[(0,'HW3.jpg')]))
+        self.assertEqual(plan([dict(id=7,name='hw3.JPG',size=9)],[('HW3.jpg',1),('HW3.jpg',2)])[3],[(0,'HW3_2.jpg'),(1,'HW3_3.jpg')])
+        # Live 11/19: each resend became HW3(1).jpg, HW3(2).jpg; a well-named same photo is left alone.
+        self.assertEqual(plan([dict(id=9,name='HW3(2).jpg',size=124323)],[('HW3.jpg',124323),('HW3.jpg',777)]),
+            ([9],[],['HW3(2).jpg'],[(1,'HW3.jpg')]))
+        class Same:stdout=json.dumps(dict(ok=True,added=[],kept=1,replaced=[],already=['HW3(2).jpg'],draft_files=['HW3(2).jpg'])).encode()
+        same=brief.draft(self.config,self.workflow,'相對論','HW#3',[str(self.photo)],roots=self.roots,run=lambda a:Same(),now='2026-11-19T02:00:00+08:00')['text']
+        for want in ('已經有這張','草稿裡的檔案：HW3(2).jpg','截止','還沒正式繳交'):self.assertIn(want,same)
+        import brief
+        class Done:stdout=json.dumps(dict(ok=True,added=[dict(id=3,name='HW3.jpg',size=124323)],kept=0,replaced=['img_920d149bd7b2.jpg'],draft_files=['HW3(1).jpg'])).encode()
+        result=brief.draft(self.config,self.workflow,'相對論','HW#3',[str(self.photo)],roots=self.roots,run=lambda a:Done(),now='2026-11-19T02:00:00+08:00')
+        self.assertIn('換掉內容相同的舊檔 img_920d149bd7b2.jpg',result['text']);self.assertIn('草稿裡的檔案：HW3(1).jpg',result['text'])
+        self.assertNotIn('已繳交',result['text'])
 
     def test_plugin_offers_draft_and_rules_say_it_is_not_a_submission(self):
         import plugin

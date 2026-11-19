@@ -61,6 +61,38 @@ def stale_gateways(installed=None,processes=None):
     return stale
 
 
+def gateway_start_times():
+    """Start times (Unix seconds) of running Hermes gateways; psutil is missing from some Pythons."""
+    try:
+        import psutil
+        return [p.info['create_time'] for p in psutil.process_iter(['cmdline','create_time'])
+            if 'hermes_cli.main' in ' '.join(p.info.get('cmdline') or []) and ' gateway' in ' '.join(p.info.get('cmdline') or [])]
+    except ImportError:pass
+    except Exception:return []
+    import subprocess
+    try:
+        out=subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',
+            "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | ? { $_.CommandLine -match 'hermes_cli.main' -and $_.CommandLine -match ' gateway' } | "
+            "% { [int64](($_.CreationDate.ToUniversalTime())-[datetime]'1970-01-01').TotalSeconds }"],
+            capture_output=True,text=True,timeout=60,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)).stdout
+    except Exception:return []
+    return [int(x) for x in out.split() if x.isdigit()]
+
+
+def plugin_newer_than_gateway(code_dir,started=None,processes=None):
+    """Code files changed after the running gateway started, i.e. not what the bot is running.
+
+    11/19: every bot runs in one gateway process that loads this plugin once, on first use.
+    "hermes -p commander gateway restart" only reconnects Telegram, so a fixed draft reply kept the
+    old text; only "hermes gateway restart" (no -p) loads changed files."""
+    if started is None:
+        if processes is None:processes=gateway_start_times()
+        if not processes:return []
+        started=max(processes)
+    # tronclass_draft.py runs as its own process on every upload, so it is never stale.
+    return sorted(p.name for p in Path(code_dir).glob('*.py') if p.name!='tronclass_draft.py' and p.stat().st_mtime>started+5)
+
+
 def bootstrap(config):
     # Resolve extension modules from this interpreter before Hermes exposes its bundled site path.
     import pydantic,pydantic_core,openai,jiter,psutil

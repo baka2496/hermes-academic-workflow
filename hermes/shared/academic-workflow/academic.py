@@ -163,6 +163,9 @@ def doctor(config,workflow,*,probe=True):
     from native import stale_gateways
     stale=stale_gateways()
     check('gateway_current',not stale,'機器人還在跑舊版 Hermes（'+'、'.join(stale)+'）；執行 hermes gateway restart',required=False)
+    from native import plugin_newer_than_gateway
+    changed=plugin_newer_than_gateway(Path(__file__).parent)
+    check('plugin_current',not changed,'學業程式（'+'、'.join(changed)+'）在機器人啟動後改過，機器人還在用舊版；執行 hermes gateway restart（不要加 -p，單一機器人重啟不會重新載入）',required=False)
     if probe and config.get('delivery_enabled'):
         # The scheduler runs this code AS commander with a secret-free environment; probing from a
         # shell succeeds even when that setup cannot find the bot token, so re-check in that setup.
