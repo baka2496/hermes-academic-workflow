@@ -215,7 +215,9 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
         with durable.open('xb') as handle:handle.write(overview.read_bytes())
     except FileExistsError:
         pass
-    artifacts=[dict(path=str(durable),sha256=hashlib.sha256(durable.read_bytes()).hexdigest())]
+    # 11/19 the owner: the attached 學業總覽.md "不是很有用". On the phone it opens as a raw Markdown
+    # table and repeats the message above it, so it stays on the computer and only real materials go out.
+    artifacts=[]
     for package in packages:
         artifacts.extend(package['payload']['artifacts'])
     artifacts=list({f['sha256']:f for f in artifacts}.values())
@@ -232,7 +234,7 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     gaps=missing_sources(workflow)
     if gaps:lines.append('ℹ️ '+'、'.join(gaps)+' 沒讀完整，可能漏列')
     if parked:lines.append('ℹ️ '+str(len(parked))+' 項準備材料卡住')
-    lines.append('完整清單在附件「學業總覽.md」')
+    lines.append('要看全部，傳「最近有什麼事」給我')
     key='digest:'+slot+':'+fingerprint
     # An undelivered row with the same slot and content stays as history; a retry needs its own key.
     earlier=sum(1 for x in workflow.publications() if x['key']==key or x['key'].startswith(key+':retry'))
