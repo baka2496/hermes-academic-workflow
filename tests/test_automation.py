@@ -222,6 +222,18 @@ class PhoneDisplayTests(unittest.TestCase):
         for bad in ('```','│','|---'):self.assertNotIn(bad,text)
         for line in text.splitlines():self.assertLessEqual(phone_width(line),self.PHONE_LINE,line)
 
+    def test_daily_digest_sends_no_overview_file(self):
+        # 11/19 the owner: the attached 學業總覽.md "不是很有用"; on the phone it is a raw Markdown table.
+        workflow=AcademicWorkflow(fixture_root());workflow.set_meta('first_preparation_verified',True)
+        workflow.ingest('tronclass','homework',[dict(id='h1',kind='homework',title='HW#3',course='相對論',
+            due_at='2026-11-10T23:59:00+08:00',submitted=False,closed=False)],complete=True)
+        prepare_digest(workflow,{'daily_hour':8},now='2026-11-09T08:00:00+08:00')
+        transport=sent_ok();workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
+        self.assertEqual(transport.files,[]);self.assertEqual(len(transport.texts),1)
+        self.assertNotIn('附件',transport.texts[0]);self.assertIn('最近有什麼事',transport.texts[0])
+        # The file is still written on the computer for the other bots that read it.
+        self.assertTrue((workflow.root/'exports/學業總覽.md').exists())
+
     def test_long_course_and_title_are_cut_cleanly(self):
         from publisher import item_label
         self.assertEqual(item_label(dict(course='作業系統',title='作業3')),'作業系統｜作業3')
