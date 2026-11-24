@@ -912,3 +912,42 @@ class TranscriptTests(unittest.TestCase):
         import plugin
         workflow=AcademicWorkflow(fixture_root())
         self.assertTrue(plugin.academic_question(workflow,'傳我的歷年成績單給我'))
+        self.assertTrue(plugin.academic_question(workflow,'傳英文版在學證明給我'))
+        self.assertTrue(plugin.academic_question(workflow,'幫我請明天早八病假'))
+
+    def test_enrollment_sis_query_and_leave_draft_guardrails(self):
+        import brief
+        root=fixture_root()
+        workflow=AcademicWorkflow(root)
+        sis=root/'FJU-SIS-MCP';(sis/'.venv/Scripts').mkdir(parents=True)
+        (sis/'.venv/Scripts/fjusis.exe').write_bytes(b'exe')
+        cache=root/'profiles/commander/cache/images';cache.mkdir(parents=True)
+        proof=cache/'receipt.jpg';proof.write_bytes(b'\xff\xd8\xff')
+        config={'sis_repo':str(sis),'state_dir':str(root)}
+        class Done:
+            def __init__(self,rc,out=b'',err=b''):self.returncode=rc;self.stdout=out;self.stderr=err
+        def fake_run(argv):
+            if 'enrollment' in argv:
+                out_dir=Path(argv[argv.index('--out')+1])
+                pdf=out_dir/'114-2_數位在學證明_英文版.pdf';pdf.write_bytes(b'%PDF-1.7\nok')
+                return Done(0,json.dumps({'hy':114,'ht':2,'lang':'en','path':str(pdf),'size':11}).encode('utf-8'))
+            if 'registration' in argv:
+                return Done(0,json.dumps({'hy':114,'ht':2,'registerStatus':1,'errorFields':[]}).encode('utf-8'))
+            if 'courses' in argv:
+                return Done(0,json.dumps({'totalItemCount':1,'result':[{'couCNa':'人文通識','tchCNa':'林老師','credit':2}]}).encode('utf-8'))
+            if 'leave' in argv and 'draft' in argv:
+                return Done(0,json.dumps({'leaveApplySn':888,'submitted':False,'draft_only':True,'leave_type':'病假','selected_courses':1,'attachments':1,'portal_url':'https://sis.fju.edu.tw/#/leave/leaveListUpdate/888'}).encode('utf-8'))
+            return Done(0,b'{}')
+        enr=brief.enrollment(config,workflow,'英文版在學證明',run=fake_run)
+        self.assertEqual(len(enr['files']),1);self.assertIn('英文版',enr['text'])
+        reg=brief.sis_query(config,workflow,'registration',run=fake_run)
+        self.assertIn('已完成註冊',reg['text'])
+        cou=brief.sis_query(config,workflow,'courses','通識',run=fake_run)
+        self.assertIn('人文通識',cou['text'])
+        outside=root/'secret.jpg';outside.write_bytes(b'\xff\xd8\xff')
+        blocked=brief.leave_draft(config,workflow,begin_date='2026-11-25',begin_section='1',end_section='2',paths=[str(outside)],roots=[root/'profiles/commander/cache'],run=fake_run)
+        self.assertEqual(blocked['error'],'file_not_allowed')
+        ok=brief.leave_draft(config,workflow,leave_type='病假',begin_date='2026-11-25',begin_section='1',end_section='2',reason='發燒',paths=[str(proof)],roots=[root/'profiles/commander/cache'],run=fake_run)
+        self.assertFalse(ok['submitted'])
+        self.assertIn('還沒正式送出',ok['text'])
+        self.assertIn('888',ok['text'])

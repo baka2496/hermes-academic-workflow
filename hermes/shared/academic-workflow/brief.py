@@ -281,37 +281,42 @@ def allowed_file(path,roots):
     return target.is_file() and target.suffix.lower() in {'.pdf','.docx','.doc','.zip','.txt','.md'} and any(target.is_relative_to(Path(r).resolve()) for r in roots)
 
 
-def transcript(config,workflow,query='',*,run=None):
-    """Download official digital semester transcript PDF(s) via FJU-SIS-MCP (fjusis CLI)."""
+def _run_sis(config,sub_args,*,run=None,timeout=180):
     import subprocess
     repo_raw=str(config.get('sis_repo') or '').strip()
     if not repo_raw or 'path/to' in repo_raw:
-        return dict(error='sis_not_configured',text='尚未設定輔大學生資訊平台工具（config.json 的 sis_repo）。',files=[])
+        return None,dict(error='sis_not_configured',text='尚未設定輔大學生資訊平台工具（config.json 的 sis_repo）。',files=[])
     repo=Path(repo_raw)
     cli=repo/'.venv/Scripts/fjusis.exe'
     cmd=[str(cli)] if cli.is_file() else [str(repo/'.venv/Scripts/python.exe'),'-m','fju_sis']
-    folder=Path(config.get('state_dir') or workflow.root)/'transcripts'
-    folder.mkdir(parents=True,exist_ok=True)
-    q=str(query or '')
-    no_ranking=bool(re.search(r'不含排名|不要排名|無排名|no[-_ ]?ranking',q,re.I))
-    sem=re.search(r'(\d{3})\s*(?:[-/－—]|學年度?第?)\s*([12])',q)
-    args=cmd+['transcript','download','--out',str(folder),'--json']
-    if sem:args+=['--hy',sem.group(1),'--ht',sem.group(2)]
-    else:args.append('--all')
-    if no_ranking:args.append('--no-ranking')
-    run=run or (lambda argv:subprocess.run(argv,capture_output=True,timeout=180,cwd=str(repo),env=cli_env(),
+    runner=run or (lambda argv:subprocess.run(argv,capture_output=True,timeout=timeout,cwd=str(repo),env=cli_env(),
         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
     try:
-        done=run(args)
+        done=runner(cmd+sub_args)
         code=getattr(done,'returncode',0)
         out=done.stdout.decode('utf-8','replace') if isinstance(done.stdout,bytes) else str(done.stdout or '')
         err=done.stderr.decode('utf-8','replace') if isinstance(done.stderr,bytes) else str(done.stderr or '')
         if code:
             detail=(err or out).strip().splitlines()[-1] if (err or out).strip() else ('exit '+str(code))
-            return dict(error='sis_failed',text='⚠️ 數位成績單下載失敗：'+detail+'（若尚未登入或權杖過期，請在電腦終端機執行 fjusis login）',files=[])
-        payload=json.loads(out)
+            return None,dict(error='sis_failed',text='⚠️ 學生資訊平台操作失敗：'+detail+'（若尚未登入或權杖過期，請在電腦終端機執行 fjusis login）',files=[])
+        return json.loads(out),None
     except Exception as exc:
-        return dict(error=type(exc).__name__,text='⚠️ 數位成績單下載失敗：'+str(exc)[:180],files=[])
+        return None,dict(error=type(exc).__name__,text='⚠️ 學生資訊平台操作失敗：'+str(exc)[:180],files=[])
+
+
+def transcript(config,workflow,query='',*,run=None):
+    """Download official digital semester transcript PDF(s) via FJU-SIS-MCP (fjusis CLI)."""
+    folder=Path(config.get('state_dir') or workflow.root)/'transcripts'
+    folder.mkdir(parents=True,exist_ok=True)
+    q=str(query or '')
+    no_ranking=bool(re.search(r'不含排名|不要排名|無排名|no[-_ ]?ranking',q,re.I))
+    sem=re.search(r'(\d{3})\s*(?:[-/－—]|學年度?第?)\s*([12])',q)
+    args=['transcript','download','--out',str(folder),'--json']
+    if sem:args+=['--hy',sem.group(1),'--ht',sem.group(2)]
+    else:args.append('--all')
+    if no_ranking:args.append('--no-ranking')
+    payload,err=_run_sis(config,args,run=run)
+    if err:return err
     items=payload.get('files') or []
     files=[str(x['path']) for x in items if x.get('path') and Path(x['path']).is_file()]
     if not files:
@@ -321,6 +326,96 @@ def transcript(config,workflow,query='',*,run=None):
     lines=['📄 官方數位成績單（'+mode+'，共 '+str(len(files))+' 份）：'+sems]
     return dict(text='\n'.join(lines),files=files,
         reply='回覆時每個檔案單獨一行寫 MEDIA:檔案路徑，檔案就會傳到 Telegram。')
+
+
+def enrollment(config,workflow,query='',*,run=None):
+    """Download official digital enrollment certificate PDF via FJU-SIS-MCP."""
+    folder=Path(config.get('state_dir') or workflow.root)/'enrollment'
+    folder.mkdir(parents=True,exist_ok=True)
+    q=str(query or '')
+    lang='en' if re.search(r'英文|english|\ben\b',q,re.I) else 'zh'
+    sem=re.search(r'(\d{3})\s*(?:[-/－—]|學年度?第?)\s*([12])',q)
+    args=['enrollment','download','--out',str(folder),'--lang',lang,'--json']
+    if sem:args+=['--hy',sem.group(1),'--ht',sem.group(2)]
+    payload,err=_run_sis(config,args,run=run)
+    if err:return err
+    path=str(payload.get('path') or '')
+    if not path or not Path(path).is_file():
+        return dict(text='目前查無可下載的數位在學證明。',files=[])
+    label='英文版' if lang=='en' else '中文版'
+    return dict(text='📄 官方數位在學證明（'+str(payload.get('hy',''))+'-'+str(payload.get('ht',''))+' '+label+'）',
+        files=[path],reply='回覆時單獨一行寫 MEDIA:檔案路徑，檔案就會傳到 Telegram。')
+
+
+def sis_query(config,workflow,kind='',query='',*,run=None):
+    """Read-only queries against FJU SIS: registration status, courses/gen-edu search, leave list/stats."""
+    k=str(kind or '').strip().lower()
+    q=str(query or '').strip()
+    if k in {'registration','reg','註冊'}:
+        data,err=_run_sis(config,['registration','--json'],run=run)
+        if err:return err
+        st='已完成註冊' if data.get('registerStatus')==1 else '目前非註冊查詢期間或未確認'
+        lines=['📋 '+str(data.get('hy',''))+'-'+str(data.get('ht',''))+' 註冊狀況：'+st]
+        for item in (data.get('errorFields') or [])[:10]:
+            lines.append('• '+str(item.get('errCna') or '')+'：'+str(item.get('organizerNote') or ''))
+        return dict(text='\n'.join(lines),data=data)
+    if k in {'courses','course','開課','通識'}:
+        gen=bool(k=='通識' or re.search(r'通識',q))
+        args=['courses','--page-size','10','--json']
+        if gen:args.append('--gen-edu')
+        kw=re.sub(r'通識|課程|開課|查詢|查','',q).strip()
+        if kw and not gen:args+=['--keyword',kw]
+        data,err=_run_sis(config,args,run=run)
+        if err:return err
+        rows=(data.get('result') or [])[:10]
+        if not rows:return dict(text='查無符合條件的課程。',data=data)
+        lines=['🔎 查詢到 '+str(data.get('totalItemCount',len(rows)))+' 門課（顯示前 '+str(len(rows))+' 門）：']
+        for c in rows:
+            lines.append('• '+str(c.get('couCNa') or '')+'｜'+str(c.get('tchCNa') or '')+'｜'+str(c.get('credit') or '')+'學分')
+        return dict(text='\n'.join(lines),data=data)
+    if k in {'leave','leaves','請假','缺曠'}:
+        lst,err=_run_sis(config,['leave','list','--json'],run=run)
+        if err:return err
+        stat,err2=_run_sis(config,['leave','stat','--json'],run=run)
+        lines=['🗓️ 請假紀錄與統計']
+        if not err2 and isinstance(stat,dict):
+            lines.append('本學期請假總計：'+str(stat.get('sumLeaveSect',0))+' 節（已核准 '+str(stat.get('sumLeaveSectYes',0))+'／未核准 '+str(stat.get('sumLeaveSectNo',0))+'）')
+        rows=(lst.get('result') or [])[:8]
+        if not rows:lines.append('本學期目前無請假紀錄。')
+        for r in rows:
+            lines.append('• #'+str(r.get('leaveApplySn',''))+' '+str(r.get('leaveNa',''))+'｜'+str(r.get('beginDate',''))+'（'+str(r.get('totalSect',''))+'節）｜'+str(r.get('applyStatusNa','')))
+        return dict(text='\n'.join(lines),leaves=lst,stat=stat if not err2 else None)
+    return dict(error='unknown_sis_kind',text='請指定要查詢的項目：registration（註冊狀況）、courses（開課／通識）、leave（請假紀錄與統計）。')
+
+
+LEAVE_DRAFT_NOTE='⚠️ 只存成請假草稿，還沒正式送出：請到輔大學生資訊平台確認內容與勾選課程後再按送出。'
+
+
+def leave_draft(config,workflow,*,leave_type='病假',begin_date='',end_date='',begin_section='',end_section='',reason='',paths=None,roots=(),run=None):
+    """Create a leave draft in FJU SIS (never confirms/submits automatically)."""
+    sys.path.insert(0,str(Path(__file__).parent))
+    import vision
+    if not (begin_date and begin_section and end_section):
+        return dict(error='missing_fields',text='建立請假草稿需要：開始日期（YYYY-MM-DD）、開始節次、結束節次。')
+    end_date=end_date or begin_date
+    clean_paths=[p for p in (paths or []) if p]
+    bad=[p for p in clean_paths if not vision.allowed(p,roots) and not allowed_file(p,roots)]
+    if bad:
+        return dict(error='file_not_allowed',text='只能附上本人剛傳給機器人的證明照片或檔案：'+'、'.join(Path(p).name for p in bad))
+    args=['leave','draft','--type',str(leave_type or '病假'),
+          '--begin-date',str(begin_date),'--end-date',str(end_date),
+          '--begin-section',str(begin_section),'--end-section',str(end_section),'--json']
+    if reason:args+=['--reason',str(reason)]
+    for p in clean_paths:args+=['--file',str(p)]
+    payload,err=_run_sis(config,args,run=run)
+    if err:return err
+    lines=[
+        '✅ 已建立請假草稿 #'+str(payload.get('leaveApplySn',''))+'（'+str(payload.get('leave_type',leave_type))+'，'+str(begin_date)+' 第 '+str(begin_section)+'–'+str(end_section)+' 節）',
+        '已勾選課程：'+str(payload.get('selected_courses',0))+' 堂｜佐證附件：'+str(payload.get('attachments',0))+' 份',
+        LEAVE_DRAFT_NOTE,
+    ]
+    if payload.get('portal_url'):lines.append(payload['portal_url'])
+    return dict(text='\n'.join(lines),draft=payload,submitted=False)
 
 
 def main():
