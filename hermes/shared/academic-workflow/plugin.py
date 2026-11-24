@@ -12,7 +12,7 @@ from academic import load,status,submit
 from native import NativeTasks
 
 
-ACADEMIC_TOPIC=r'學業|作業|考試|複習|讀書|課|教室|考場|公告|老師|待辦|最近有什麼|有什麼事|重要的事|期限|截止|題目|講義|附件|考卷|HW|hw|Quiz|quiz|繳交|上傳|草稿'
+ACADEMIC_TOPIC=r'學業|作業|考試|複習|讀書|課|教室|考場|公告|老師|待辦|最近有什麼|有什麼事|重要的事|期限|截止|題目|講義|附件|考卷|HW|hw|Quiz|quiz|繳交|上傳|草稿|成績單|歷年成績|數位成績單|學期成績|排名'
 # "傳相對論 HW#3 的題目給我" matched none of these, so the bot never heard of action=attachment; a
 # course name alone is also an academic question.
 
@@ -32,7 +32,9 @@ COURSE_RULE=('問某門課的上課地點、教室、公告、老師說了什麼
              # 11/19: the owner sent a photo of a finished derivation and wanted it handed in.
              '本人要把照片或檔案交到作業（交、繳交、上傳、存草稿）時用 action=draft、key=課名、text=作業名稱、files=[圖片路徑]，'
              '照它回的 text 回覆；它只存草稿，一定要講「還沒正式繳交，請到 TronClass 按繳交作業」，絕不能說已繳交。'
-             'brief、course、attachment 這類查詢直接回覆，不需要 agent_preferences review 或 tool_describe。')
+             '要歷年成績單或學期數位成績單時用 action=transcript（text 可填指定學期或「不含排名」，不填則下載全部學期），'
+             '照它回的 files 每個檔案一行寫 MEDIA:路徑傳給本人；失敗就照實回報。'
+             'brief、course、attachment、transcript 這類查詢直接回覆，不需要 agent_preferences review 或 tool_describe。')
 # "傳題目給我": kanban_create failed, the bot still answered "已接單" and then searched files for
 # minutes, reading another profile's auth.json. Commander never needs credential files.
 SECRET_PATH=re.compile(r'auth\.json|\.env\b|credentials|secrets?\.(json|ya?ml|txt)|\.session\b|cookies?\.(json|txt|sqlite)',re.I)
@@ -123,6 +125,9 @@ def register(ctx):
                 files=args.get('files') or []
                 if isinstance(files,str):files=[files]
                 result=brief.draft(config,workflow,args.get('key',''),args.get('text',''),files,roots=image_roots)
+            elif action=='transcript':
+                import brief
+                result=brief.transcript(config,workflow,args.get('text',''))
             elif action=='source':
                 result=next((x for x in workflow.inbox_items() if x['key']==args.get('key')),{'error':'source_not_found'})
             elif action=='submit':result=submit(config,workflow,args['task_id'])
@@ -155,11 +160,11 @@ def register(ctx):
     def post_llm_call(session_id='',turn_id='',**kwargs):
         with lock:human_turns.pop((session_id,turn_id),None)
     ctx.register_tool(name='academic_workflow',toolset='skills',schema={
-        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；draft=把本人傳的照片／檔案存成 TronClass 作業草稿（key=課名，text=作業名稱，files=圖片路徑；只存草稿，本人自己按繳交）；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
+        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；draft=把本人傳的照片／檔案存成 TronClass 作業草稿（key=課名，text=作業名稱，files=圖片路徑；只存草稿，本人自己按繳交）；transcript=從輔大學生資訊平台下載官方數位成績單 PDF（text 可選填學期如 114-1 或不含排名，不填抓全部學期），回 files 路徑，用 MEDIA:路徑傳給本人；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
         'parameters':{'type':'object','required':['action'],'properties':{
-            'action':{'type':'string','enum':['brief','course','attachment','draft','status','source','capture','submit']},'key':{'type':'string'},
+            'action':{'type':'string','enum':['brief','course','attachment','draft','transcript','status','source','capture','submit']},'key':{'type':'string'},
             'files':{'type':'array','items':{'type':'string'},'description':'draft：要上傳的圖片或檔案路徑（訊息裡 image_url: 後面的路徑）'},
-            'text':{'type':'string','description':'capture：本輪本人要記下的學業事項原文；attachment：作業或公告名稱，例如 HW#3'},'task_id':{'type':'string'}}}},handler=handler)
+            'text':{'type':'string','description':'capture：本輪本人要記下的學業事項原文；attachment：作業或公告名稱；transcript：選填學期（如 114-1）或不含排名'},'task_id':{'type':'string'}}}},handler=handler)
     ctx.register_tool(name='view_image',toolset='skills',schema={
         'name':'view_image','description':'看本人傳來的照片或截圖：打開 Hermes 暫存的圖片檔，抄出上面的文字、算式與數據。本人傳圖時一定先用它，不要說沒收到圖片。',
         'parameters':{'type':'object','required':['path'],'properties':{

@@ -875,3 +875,40 @@ class PublicNamingTests(unittest.TestCase):
             for word in forbidden:
                 if word in text:hits.append(rel)
         self.assertEqual(hits,[],'Found private bot nickname(s) in tracked files: '+', '.join(sorted(set(hits))))
+
+
+class TranscriptTests(unittest.TestCase):
+    def test_transcript_downloads_all_and_parses_semester_and_ranking_flags(self):
+        import brief
+        root=fixture_root()
+        workflow=AcademicWorkflow(root)
+        sis=root/'FJU-SIS-MCP';(sis/'.venv/Scripts').mkdir(parents=True)
+        (sis/'.venv/Scripts/fjusis.exe').write_bytes(b'exe')
+        config={'sis_repo':str(sis),'state_dir':str(root)}
+        seen=[]
+        class Done:
+            def __init__(self,rc,out=b'',err=b''):self.returncode=rc;self.stdout=out;self.stderr=err
+        def fake_run(argv):
+            seen.append(argv)
+            out_dir=Path(argv[argv.index('--out')+1])
+            pdf=out_dir/'114-1_學期數位成績單_含排名.pdf'
+            pdf.write_bytes(b'%PDF-1.7\nok')
+            return Done(0,json.dumps({'files':[{'hy':114,'ht':1,'path':str(pdf),'size':11}]}).encode('utf-8'))
+        res_all=brief.transcript(config,workflow,'傳歷年成績單給我',run=fake_run)
+        self.assertIn('--all',seen[0])
+        self.assertNotIn('--no-ranking',seen[0])
+        self.assertEqual(len(res_all['files']),1)
+        self.assertIn('MEDIA:',res_all['reply'])
+        res_one=brief.transcript(config,workflow,'給我 114-1 不含排名',run=fake_run)
+        self.assertIn('--hy',seen[1]);self.assertIn('114',seen[1])
+        self.assertIn('--ht',seen[1]);self.assertIn('1',seen[1])
+        self.assertIn('--no-ranking',seen[1])
+        self.assertIn('不含排名',res_one['text'])
+        fail=brief.transcript(config,workflow,'',run=lambda a:Done(1,err='錯誤：尚未登入'.encode('utf-8')))
+        self.assertEqual(fail['error'],'sis_failed')
+        self.assertIn('fjusis login',fail['text'])
+
+    def test_transcript_question_triggers_academic_rule(self):
+        import plugin
+        workflow=AcademicWorkflow(fixture_root())
+        self.assertTrue(plugin.academic_question(workflow,'傳我的歷年成績單給我'))

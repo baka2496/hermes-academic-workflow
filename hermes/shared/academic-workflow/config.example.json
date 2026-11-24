@@ -5,6 +5,7 @@
   "state_root": "C:/path/to/hermes-home/shared/academic-state",
   "runtime_python": "C:/path/to/runtime-venv/Scripts/python.exe",
   "tronclass_repo": "C:/path/to/FJU-TronClass-MCP",
+  "sis_repo": "C:/path/to/FJU-SIS-MCP",
   "mailbox": "C:/path/to/mailbox.py",
   "mail_python": "C:/path/to/mail-venv/Scripts/python.exe",
   "collection_minutes": 30,

@@ -40,6 +40,7 @@
 ### 接上學校與信箱
 
 - `tronclass_repo` 指向已配置登入的 FJU-TronClass-MCP checkout。協調器用它的 `.venv/Scripts/python.exe` 讀取資料，並在準備卡提供 `.venv/Scripts/fjumcp.exe` 的路徑。 [FJU-TronClass-MCP](https://github.com/RX5950XT/FJU-TronClass-MCP)
+- `sis_repo`（選填）指向已安裝並登入的 [FJU-SIS-MCP](https://github.com/baka2496/FJU-SIS-MCP) checkout。設定後可透過 `academic_workflow(action="transcript")` 下載官方數位成績單 PDF 並回傳至 Telegram；登入權杖存於 Windows 認證管理員，不保存明文密碼。
 - `mailbox` 指向本機已授權的 Gmail 連接器，`mail_python` 指向可執行它的 Python。連接器需提供 [collect_mail.py](hermes/shared/academic-workflow/collect_mail.py) 使用的 `gmail`、`folder`、`imap_result`、`search`、`gmail_fetch`、`describe_gmail` 和 `gmail_message`。Gmail 先用寄件者、主旨和課程名稱篩選候選信，再讀候選信的內文。
 - Telegram 送達預設關閉。啟用前，在 `commander` 的本機 Hermes 設定 Bot 憑證和私人 `home_channel`，執行 `academic.py telegram-test` 確認收到測試訊息，再將 `delivery_enabled` 改為 `true`。
 
