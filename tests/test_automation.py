@@ -959,8 +959,21 @@ class ContactLookupTests(unittest.TestCase):
         parsed=contacts.extract_recipient_query('能幫我寄信給輔大資管系李博逸嗎')
         self.assertEqual(parsed['name'],'李博逸')
         self.assertEqual(parsed['org'],'輔大資管系')
+        no_dept_suffix=contacts.extract_recipient_query('能幫我寄信給輔大物理邱紹斌嗎')
+        self.assertEqual(no_dept_suffix['name'],'邱紹斌')
+        self.assertEqual(no_dept_suffix['org'],'物理')
         self.assertIsNone(contacts.extract_recipient_query('今天天氣如何'))
         self.assertIsNone(contacts.extract_recipient_query('寄信給 test@mail.fju.edu.tw'))
+
+    def test_lookup_tolerates_one_char_homophone_and_notes_official_name(self):
+        import contacts
+        def fake_fetch(url,timeout=4):
+            if 'duckduckgo' in url:
+                return '<a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.phy.fju.edu.tw%2Fteacher%2F">link</a>'
+            return '<html><body><h1>邱劭斌</h1><p>Email: 159959@mail.fju.edu.tw</p></body></html>'
+        ctx_text=contacts.lookup_context({},None,'能幫我寄信給輔大物理邱紹斌嗎',fetch=fake_fetch,skip_gmail=True)
+        self.assertIn('159959@mail.fju.edu.tw',ctx_text)
+        self.assertIn('官網姓名為「邱劭斌」',ctx_text)
 
     def test_lookup_context_finds_email_from_public_fju_page_and_injects_into_pre_llm_call(self):
         import contacts,plugin

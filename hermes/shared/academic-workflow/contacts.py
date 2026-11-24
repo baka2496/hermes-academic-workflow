@@ -48,7 +48,13 @@ def extract_recipient_query(text: str) -> dict | None:
         org = om.group(1).strip()
         name = cleaned[om.end():].strip()
     else:
-        name = cleaned
+        stripped = re.sub(r'^(?:輔仁大學|輔大)', '', cleaned).strip()
+        # Handle "輔大物理邱紹斌" (department without trailing 系/所 + 3-char Chinese name)
+        if re.fullmatch(r'[\u4e00-\u9fff]{5,7}', stripped):
+            org = stripped[:-3]
+            name = stripped[-3:]
+        else:
+            name = stripped
     name = re.sub(r'^(?:輔仁大學|輔大)', '', name).strip()
     if len(name) < 2 or len(name) > 12:
         return None
@@ -156,14 +162,29 @@ def _extract_ddg_urls(ddg_html: str) -> list[str]:
     return urls
 
 
-def _search_web_fju(name: str, org: str = '', *, fetch=None, budget_seconds: float = 7.0) -> tuple[list[dict], list[dict]]:
+def _find_name_matches(text: str, name: str) -> tuple[str, list[re.Match]]:
+    exact = list(re.finditer(re.escape(name), text))
+    if exact:
+        return name, exact
+    # Allow 1-character typo/homophone for 3-character Chinese names (same surname + 1 other char)
+    if len(name) == 3 and re.fullmatch(r'[\u4e00-\u9fff]{3}', name):
+        pat = re.compile(re.escape(name[0]) + r'(?:' + re.escape(name[1]) + r'[\u4e00-\u9fff]|[\u4e00-\u9fff]' + re.escape(name[2]) + r')')
+        fuzzy = list(pat.finditer(text))
+        if fuzzy:
+            return fuzzy[0].group(0), fuzzy
+    return '', []
+
+
+def _search_web_fju(name: str, org: str = '', *, fetch=None, budget_seconds: float = 8.0) -> tuple[list[dict], list[dict]]:
     fetch = fetch or _default_fetch
     deadline = time.monotonic() + budget_seconds
     dept = re.sub(r'^(?:輔仁大學|輔大)', '', org or '').strip()
     queries = [f'site:fju.edu.tw {name} {dept}'.strip(), f'site:fju.edu.tw {name}']
+    if dept and len(name) == 3:
+        queries.append(f'site:fju.edu.tw {dept} {name[0]} {name[2]} email')
     candidate_urls: list[str] = []
     for q in queries:
-        if time.monotonic() >= deadline or len(candidate_urls) >= 3:
+        if time.monotonic() >= deadline or len(candidate_urls) >= 4:
             break
         try:
             ddg = fetch('https://html.duckduckgo.com/html/?q=' + urllib.parse.quote(q), timeout=4)
@@ -175,26 +196,27 @@ def _search_web_fju(name: str, org: str = '', *, fetch=None, budget_seconds: flo
     hits = []
     pages = []
     seen = set()
-    for url in candidate_urls[:3]:
+    for url in candidate_urls[:4]:
         if time.monotonic() >= deadline:
             break
         try:
             page = fetch(url, timeout=4)
         except Exception:
             continue
-        if name not in page:
-            continue
         plain = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', page)))
+        matched_name, plain_matches = _find_name_matches(plain, name)
+        if not matched_name:
+            continue
         nearby = []
         snippets = []
-        for match in re.finditer(re.escape(name), plain):
+        for match in plain_matches:
             window = plain[max(0, match.start() - 120):min(len(plain), match.end() + 400)]
             snippets.append(window)
             for addr in _deobfuscate_emails(window):
                 if addr not in nearby and not GENERIC_EMAILS.match(addr):
                     nearby.append(addr)
-        # Also inspect raw HTML around name for mailto: links hidden in attributes
-        for match in re.finditer(re.escape(name), page):
+        # Also inspect raw HTML around matched name for mailto: links hidden in attributes
+        for match in re.finditer(re.escape(matched_name), page):
             raw_win = page[max(0, match.start() - 400):min(len(page), match.end() + 1200)]
             for addr in _deobfuscate_emails(raw_win):
                 if addr not in nearby and not GENERIC_EMAILS.match(addr):
@@ -203,10 +225,10 @@ def _search_web_fju(name: str, org: str = '', *, fetch=None, budget_seconds: flo
         for addr in chosen[:2]:
             if addr not in seen:
                 seen.add(addr)
-                hits.append({'email': addr, 'source': url})
+                hits.append({'email': addr, 'source': url, 'matched_name': matched_name})
         ext = re.search(r'(?:分機|電話|TEL|Ext)[^0-9]{0,8}(\(?0?2\)?[-\s]?2905[-\s]?\d{4}|\d{4})', snippets[0] if snippets else '', re.I)
         office = re.search(r'(?:研究室|辦公室)[^A-Za-z0-9\u4e00-\u9fff]{0,4}([A-Za-z]{1,3}\s?\d{3,4}|[\u4e00-\u9fff]{2,6}\s?[A-Za-z]{1,3}\d{3,4})', snippets[0] if snippets else '')
-        pages.append({'url': url, 'ext': ext.group(1) if ext else '', 'office': office.group(1) if office else ''})
+        pages.append({'url': url, 'matched_name': matched_name, 'ext': ext.group(1) if ext else '', 'office': office.group(1) if office else ''})
         if hits:
             break
     return hits, pages
@@ -243,7 +265,8 @@ def lookup_context(config: dict, workflow, text: str, *, fetch=None, skip_gmail:
     if matches:
         lines = [f'\n【系統已自動查到「{name}」的聯絡 Email（請直接附上讓本人確認，不要再反問本人有沒有 Email）】']
         for m in matches[:3]:
-            lines.append(f"- {m['email']}（來源：{m['source']}）")
+            note = f"（官網姓名為「{m['matched_name']}」，請提醒本人核對）" if m.get('matched_name') and m['matched_name'] != name else ''
+            lines.append(f"- {m['email']}{note}（來源：{m['source']}）")
         lines.append('提醒：寄信前仍須先確認信件主旨、內容與收件人，取得本人同意後才可送出。')
         return '\n'.join(lines) + '\n'
     if pages:
