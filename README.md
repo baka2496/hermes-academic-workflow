@@ -4,6 +4,46 @@
 
 儲存庫收錄協調器、來源讀取程式、Hermes 外掛、學業技能和測試。帳號憑證、課務資料、郵件、工作卡、通知收據及資料庫由本機管理。
 
+## 整體工作流
+
+```mermaid
+flowchart TD
+    User["本人（Telegram）"]
+
+    subgraph Instant["即時對話（數秒內回覆）"]
+        Cmd["學業助理（commander）\nuser-academic-workflow 外掛"]
+        TC["FJU-TronClass-MCP\n下載題目講義、存作業草稿"]
+        SIS["FJU-SIS-MCP\n成績單、在學證明、註冊開課、請假草稿"]
+        Cred["Windows 認證管理員\n只存登入權杖，不存密碼"]
+    end
+
+    subgraph Auto["背景排程（每 5 分鐘巡檢）"]
+        Coord["學業協調器\nacademic-coordinator.py"]
+        Sources["TronClass + Gmail\n每 30 分鐘同步來源"]
+        DB[("本機共同待辦資料庫\nacademic.db")]
+        Board["Hermes 看板\ncommand-center"]
+        Worker["背景執行者\nhermes-agent"]
+        Verify["獨立驗證與每日摘要"]
+    end
+
+    User <-->|"問待辦、要檔案、傳照片"| Cmd
+    Cmd -->|"查近況／課程"| DB
+    Cmd -->|"抓附件／存作業草稿"| TC
+    Cmd -->|"抓成績單／在學證明／查開課／建請假草稿"| SIS
+    TC --- Cred
+    SIS --- Cred
+
+    Sources --> Coord
+    Coord <--> DB
+    Coord -->|"派發準備卡"| Board
+    Board --> Worker
+    Worker -->|"提交產物 manifest"| Verify
+    Verify -->|"每日摘要、期限提醒、驗證後材料"| User
+
+    TC -.->|"本人於網頁按繳交作業"| Final["本人最終確認與提交"]
+    SIS -.->|"本人於學生資訊平台確認送出假單"| Final
+```
+
 ## 在 Windows 配置
 
 本版對應 Hermes Agent 0.23.0 的 Windows 桌面版，驗證使用 Python 3.14。準備 `commander` 和 `hermes-agent` 兩個 profile、`command-center` 看板，以及兩個 profile 的模型授權。準備卡派給 `hermes-agent`，使用 `openai-codex` 的 `gpt-6-luna`。請在隔離的 Hermes 資料目錄配置，並把 `HERMES_HOME` 指向該目錄。
