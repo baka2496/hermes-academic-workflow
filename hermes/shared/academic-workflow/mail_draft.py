@@ -39,6 +39,16 @@ def create_draft(mailbox_path: str, to_addr: str, subject: str, body: str, attac
     spec.loader.exec_module(mb)
 
     with mb.gmail() as (client, account):
+        # Python/OpenSSL on Windows raises SSL: BAD_LENGTH when imaplib sends >16 MB in one write.
+        orig_send = client.send
+        def chunked_send(data):
+            step = 256 * 1024
+            if len(data) <= step:
+                return orig_send(data)
+            view = memoryview(data)
+            for off in range(0, len(view), step):
+                orig_send(view[off:off + step])
+        client.send = chunked_send
         draft_folder = mb.folder(client, 'Drafts')
         draft_mid = '<academic-draft-' + hashlib.sha256(f'{to_addr}|{subject}|{time.time()}'.encode('utf-8')).hexdigest()[:24] + '@localhost>'
         msg = EmailMessage(policy=email.policy.SMTP)
