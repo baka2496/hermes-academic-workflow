@@ -37,6 +37,8 @@ COURSE_RULE=('問某門課的上課地點、教室、公告、老師說了什麼
              '查當學期註冊狀況、全校開課／通識課程或請假紀錄統計時用 action=sis（key=registration|courses|leave，text=關鍵字）。'
              '要建立請假草稿時用 action=leave_draft（帶 begin_date、end_date、begin_section、end_section、leave_type、text=事由、files=證明圖片路徑），'
              '它只存請假草稿，絕不自動送出，回覆一定要講「還沒正式送出，請到學生資訊平台確認後送出」。'
+             '使用者要把信件或成績單／附件「存到 Gmail 草稿」時，一定要呼叫 action=mail_draft（帶 to=收件人Email、subject=主旨、text=內文、files=附件路徑）真正寫入 Gmail 草稿匣，'
+             '絕不能只在聊天室打一段「【信件草稿】」就說已存到草稿；存完提醒本人打開 Gmail 草稿匣確認後再自行寄出。'
              'brief、course、attachment、transcript、enrollment、sis 這類查詢直接回覆，不需要 agent_preferences review 或 tool_describe。')
 # "傳題目給我": kanban_create failed, the bot still answered "已接單" and then searched files for
 # minutes, reading another profile's auth.json. Commander never needs credential files.
@@ -159,6 +161,16 @@ def register(ctx):
                     end_section=args.get('end_section') or '',
                     reason=args.get('text') or '',
                     paths=files,roots=image_roots)
+            elif action=='mail_draft':
+                import brief
+                files=args.get('files') or []
+                if isinstance(files,str):files=[files]
+                result=brief.mail_draft(
+                    config,workflow,
+                    to=args.get('to') or args.get('key') or '',
+                    subject=args.get('subject') or '',
+                    body=args.get('text') or '',
+                    paths=files,roots=image_roots)
             elif action=='source':
                 result=next((x for x in workflow.inbox_items() if x['key']==args.get('key')),{'error':'source_not_found'})
             elif action=='submit':result=submit(config,workflow,args['task_id'])
@@ -191,11 +203,13 @@ def register(ctx):
     def post_llm_call(session_id='',turn_id='',**kwargs):
         with lock:human_turns.pop((session_id,turn_id),None)
     ctx.register_tool(name='academic_workflow',toolset='skills',schema={
-        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；draft=把本人傳的照片／檔案存成 TronClass 作業草稿（key=課名，text=作業名稱，files=圖片路徑；只存草稿，本人自己按繳交）；transcript=下載官方數位成績單 PDF；enrollment=下載官方數位在學證明 PDF（text 可填英文或學期）；sis=查詢學生資訊平台（key=registration|courses|leave，text=關鍵字）；leave_draft=建立請假草稿（只存草稿不自動送出，可附本人傳的證明照片）；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
+        'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；draft=把本人傳的照片／檔案存成 TronClass 作業草稿（key=課名，text=作業名稱，files=圖片路徑；只存草稿，本人自己按繳交）；transcript=下載官方數位成績單 PDF；enrollment=下載官方數位在學證明 PDF（text 可填英文或學期）；sis=查詢學生資訊平台（key=registration|courses|leave，text=關鍵字）；contact=查詢老師公開 Email；leave_draft=建立請假草稿（只存草稿不自動送出，可附本人傳的證明照片）；mail_draft=真正寫入 Gmail 草稿匣（帶 to、subject、text=內文、files=附件路徑；只存草稿不寄出，附件過大自動拆封）；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
         'parameters':{'type':'object','required':['action'],'properties':{
-            'action':{'type':'string','enum':['brief','course','attachment','draft','transcript','enrollment','sis','contact','leave_draft','status','source','capture','submit']},'key':{'type':'string'},
-            'files':{'type':'array','items':{'type':'string'},'description':'draft/leave_draft：本人剛傳來的圖片或檔案路徑'},
-            'text':{'type':'string','description':'capture：原文；attachment：作業名；transcript/enrollment：學期或版本；sis：搜尋關鍵字；leave_draft：請假事由'},
+            'action':{'type':'string','enum':['brief','course','attachment','draft','transcript','enrollment','sis','contact','leave_draft','mail_draft','status','source','capture','submit']},'key':{'type':'string'},
+            'files':{'type':'array','items':{'type':'string'},'description':'draft/leave_draft/mail_draft：要附加的本機檔案路徑'},
+            'text':{'type':'string','description':'capture：原文；attachment：作業名；transcript/enrollment：學期或版本；sis：搜尋關鍵字；leave_draft：請假事由；mail_draft：信件內文'},
+            'to':{'type':'string','description':'mail_draft：收件人 Email 地址'},
+            'subject':{'type':'string','description':'mail_draft：信件主旨'},
             'leave_type':{'type':'string','description':'leave_draft：假別（預設病假，如事假、病假、公假）'},
             'begin_date':{'type':'string','description':'leave_draft：開始日期 YYYY-MM-DD'},
             'end_date':{'type':'string','description':'leave_draft：結束日期 YYYY-MM-DD（可省略同開始日期）'},

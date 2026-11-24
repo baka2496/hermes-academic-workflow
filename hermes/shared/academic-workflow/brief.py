@@ -418,6 +418,67 @@ def leave_draft(config,workflow,*,leave_type='病假',begin_date='',end_date='',
     return dict(text='\n'.join(lines),draft=payload,submitted=False)
 
 
+GMAIL_DRAFT_NOTE='⚠️ 已存入你的 Gmail 草稿匣，還沒寄出：請打開 Gmail「草稿」確認收件人、內文與附件後再自行按傳送。'
+
+
+def _pack_attachment_batches(paths,max_bytes=18*1024*1024):
+    if not paths:return [[]]
+    batches,current,total=[],[],0
+    for p in paths:
+        size=Path(p).stat().st_size
+        if size>max_bytes:return None
+        if current and total+size>max_bytes:
+            batches.append(current);current,total=[p],size
+        else:current.append(p);total+=size
+    if current:batches.append(current)
+    return batches
+
+
+def mail_draft(config,workflow,*,to='',subject='',body='',paths=None,roots=(),run=None):
+    """Create real draft(s) in Gmail Drafts (never sends). Automatically splits attachments if >18 MB."""
+    import subprocess
+    mailbox=str(config.get('mailbox') or '').strip()
+    py=str(config.get('mail_python') or '').strip()
+    if not mailbox or not py or 'path/to' in mailbox:
+        return dict(error='mail_not_configured',text='尚未設定本機 Gmail 連接器（config.json 的 mailbox / mail_python），無法寫入 Gmail 草稿匣。')
+    to=str(to or '').strip()
+    if not re.fullmatch(r'[^@\s<>]+@[^@\s<>]+',to):
+        return dict(error='invalid_recipient',text='請提供有效的收件人 Email 地址，再存入 Gmail 草稿匣。')
+    state_root=Path(config.get('state_dir') or workflow.root)
+    allowed_roots=list(roots)+[state_root/'transcripts',state_root/'enrollment',state_root/'attachments']
+    clean_paths=[p for p in (paths or []) if p]
+    bad=[p for p in clean_paths if not allowed_file(p,allowed_roots)]
+    if bad:
+        return dict(error='file_not_allowed',text='只能附上本機學業檔案（成績單、在學證明、課程附件或剛傳的檔案）：'+'、'.join(Path(p).name for p in bad))
+    batches=_pack_attachment_batches(clean_paths)
+    if batches is None:
+        return dict(error='single_file_too_large',text='單一附件超過 18 MB（編碼後超過 Gmail 25 MB 上限），無法存入 Gmail 草稿。')
+    script=Path(__file__).with_name('mail_draft.py')
+    runner=run or (lambda payload:subprocess.run([py,'-X','utf8',str(script)],input=json.dumps(payload,ensure_ascii=False).encode('utf-8'),
+        capture_output=True,timeout=180,env=cli_env(),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+    created=[]
+    for idx,batch in enumerate(batches,1):
+        sub=(subject or '學業信件')+(f' ({idx}/{len(batches)})' if len(batches)>1 else '')
+        req={'mailbox':mailbox,'to':to,'subject':sub,'body':body or '','attachments':batch}
+        try:
+            done=runner(req)
+            out=done.stdout.decode('utf-8','replace') if isinstance(done.stdout,bytes) else str(done.stdout or '')
+            res=json.loads(out.strip().splitlines()[-1])
+        except Exception as exc:
+            res={'ok':False,'error':type(exc).__name__,'message':str(exc)[:180]}
+        if not res.get('ok'):
+            return dict(error=res.get('error') or 'draft_failed',text='❌ 寫入 Gmail 草稿匣失敗：'+str(res.get('message') or res.get('error')),created=created)
+        created.append(res)
+    lines=['✅ 已實際存入你的 Gmail 草稿匣（共 '+str(len(created))+' 封草稿）']
+    if len(created)>1:
+        lines.append('（因附件總大小超過 Gmail 單封 25 MB 上限，已自動拆成 '+str(len(created))+' 封草稿）')
+    for c in created:
+        names='、'.join(a['name'] for a in (c.get('attachments') or [])) or '無附件'
+        lines.append('• 收件人：'+c['to']+'｜主旨：'+c['subject']+'｜附件：'+names)
+    lines.append(GMAIL_DRAFT_NOTE)
+    return dict(text='\n'.join(lines),drafts=created,sent=False)
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     parser=argparse.ArgumentParser()

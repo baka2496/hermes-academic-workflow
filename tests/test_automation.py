@@ -992,3 +992,30 @@ class ContactLookupTests(unittest.TestCase):
         with patch.object(contacts,'lookup_context',return_value='\n【系統已自動查到】999999@mail.fju.edu.tw\n'):
             out=ctx.hooks['pre_llm_call'](session_id='s1',platform='telegram',user_message='能幫我寄信給輔大資管系王小明嗎')
         self.assertIn('999999@mail.fju.edu.tw',out['context'])
+
+    def test_mail_draft_splits_large_transcripts_and_blocks_outside_files(self):
+        import brief
+        root=fixture_root()
+        workflow=AcademicWorkflow(root)
+        tr_dir=root/'transcripts';tr_dir.mkdir(parents=True)
+        pdfs=[]
+        for name in ('113-1.pdf','113-2.pdf','114-1.pdf','114-2.pdf'):
+            p=tr_dir/name;p.write_bytes(b'%PDF-1.7' + b'0'*(6*1024*1024))
+            pdfs.append(str(p))
+        outside=root/'secret.pdf';outside.write_bytes(b'%PDF-1.7')
+        config={'mailbox':'C:/fake/mailbox.py','mail_python':'C:/fake/python.exe','state_dir':str(root)}
+        blocked=brief.mail_draft(config,workflow,to='166997@mail.fju.edu.tw',subject='成績單',body='您好',paths=[str(outside)])
+        self.assertEqual(blocked['error'],'file_not_allowed')
+        seen=[]
+        class Done:
+            def __init__(self,out):self.stdout=out.encode('utf-8')
+        def fake_run(payload):
+            seen.append(payload)
+            return Done(json.dumps({'ok':True,'verified':True,'to':payload['to'],'subject':payload['subject'],
+                'attachments':[{'name':Path(x).name,'size':1} for x in payload['attachments']]}))
+        ok=brief.mail_draft(config,workflow,to='166997@mail.fju.edu.tw',subject='檢附歷年成績單',body='老師您好',paths=pdfs,run=fake_run)
+        self.assertFalse(ok['sent'])
+        self.assertEqual(len(seen),2) # 4 x 6 MB = 24 MB -> split into 2 Gmail drafts under 18 MB each
+        self.assertIn('(1/2)',seen[0]['subject'])
+        self.assertIn('(2/2)',seen[1]['subject'])
+        self.assertIn('已實際存入你的 Gmail 草稿匣',ok['text'])
