@@ -42,12 +42,40 @@ def status(config,workflow):
         calendar='local_provisional; authenticated calendar not verified')
 
 
+def sis_keepalive(config,workflow,*,run=None):
+    """Refresh the 20-minute FJU SIS token during the 5-minute scheduler tick."""
+    import subprocess
+    from brief import cli_env
+    repo_raw=str(config.get('sis_repo') or '').strip()
+    if not repo_raw or 'path/to' in repo_raw:return {'state':'not_configured'}
+    last=workflow.get_meta('last_sis_keepalive_at')
+    interval=int(config.get('sis_keepalive_minutes',10))
+    now=datetime.fromisoformat(iso())
+    if last and now-datetime.fromisoformat(last)<timedelta(minutes=interval):
+        return {'state':'recent'}
+    repo=Path(repo_raw)
+    cli=repo/'.venv/Scripts/fjusis.exe'
+    cmd=[str(cli),'keepalive','--quiet'] if cli.is_file() else [str(repo/'.venv/Scripts/python.exe'),'-m','fju_sis','keepalive','--quiet']
+    runner=run or (lambda argv:subprocess.run(argv,capture_output=True,timeout=30,cwd=str(repo),env=cli_env(),
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+    try:
+        done=runner(cmd)
+        if getattr(done,'returncode',0)==0:
+            workflow.set_meta('last_sis_keepalive_at',now.isoformat())
+            return {'state':'refreshed','at':now.isoformat()}
+        err=(getattr(done,'stderr',b'') or b'').decode('utf-8','replace').strip()[:160]
+        return {'state':'failed','detail':err or ('exit '+str(getattr(done,'returncode',1)))}
+    except Exception as exc:
+        return {'state':'failed','detail':type(exc).__name__+': '+str(exc)[:120]}
+
+
 def tick(config,workflow,*,collect=False):
     with commander_scope(config):
         from agent.estop import is_engaged
         if is_engaged():return {'state':'paused_by_native_estop'}
     with workflow.lease('tick',seconds=1800) as acquired:
         if not acquired:return {'state':'another_tick_active'}
+        sis_state=sis_keepalive(config,workflow)
         last=workflow.get_meta('last_collection_at')
         due=not last or datetime.fromisoformat(iso())-datetime.fromisoformat(last)>=timedelta(minutes=config.get('collection_minutes',30))
         if collect or due:collect_sources(workflow,config)
@@ -60,7 +88,7 @@ def tick(config,workflow,*,collect=False):
             dispatched=workflow.dispatch(native,limit=config.get('max_active_preparations',2))
         else:recovered=reconciled=dispatched=[]
         export=export_agenda(workflow,native=native,preparation=preparing(config))
-        result=dict(state='ok',at=iso(),interpretation=interpreted,recovery=recovered,reconciled=reconciled,dispatched=dispatched,agenda_path=str(export))
+        result=dict(state='ok',at=iso(),sis_keepalive=sis_state,interpretation=interpreted,recovery=recovered,reconciled=reconciled,dispatched=dispatched,agenda_path=str(export))
         # Publishing is enabled only after installation and isolated contract verification.
         if config.get('delivery_enabled'):
             from publisher import prepare_digest,prepare_health,TelegramTransport
