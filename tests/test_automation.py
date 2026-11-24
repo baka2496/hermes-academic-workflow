@@ -962,6 +962,9 @@ class ContactLookupTests(unittest.TestCase):
         no_dept_suffix=contacts.extract_recipient_query('能幫我寄信給輔大物理邱紹斌嗎')
         self.assertEqual(no_dept_suffix['name'],'邱紹斌')
         self.assertEqual(no_dept_suffix['org'],'物理')
+        draft_phrase=contacts.extract_recipient_query('幫我把四個學期的成績單合併存到 Gmail 草稿給輔大資管系李博逸')
+        self.assertEqual(draft_phrase['name'],'李博逸')
+        self.assertEqual(draft_phrase['org'],'輔大資管系')
         self.assertIsNone(contacts.extract_recipient_query('今天天氣如何'))
         self.assertIsNone(contacts.extract_recipient_query('寄信給 test@mail.fju.edu.tw'))
 

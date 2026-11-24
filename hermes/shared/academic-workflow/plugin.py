@@ -38,6 +38,7 @@ COURSE_RULE=('問某門課的上課地點、教室、公告、老師說了什麼
              '要建立請假草稿時用 action=leave_draft（帶 begin_date、end_date、begin_section、end_section、leave_type、text=事由、files=證明圖片路徑），'
              '它只存請假草稿，絕不自動送出，回覆一定要講「還沒正式送出，請到學生資訊平台確認後送出」。'
              '使用者要把信件或成績單／附件「存到 Gmail 草稿」時，一定要呼叫 action=mail_draft（帶 to=收件人Email、subject=主旨、text=內文、files=附件路徑）真正寫入 Gmail 草稿匣，'
+             'mail_draft 會自動無損合併多個大 PDF，直接把 transcript 回傳的檔案路徑放進 files 即可，絕對不要開 terminal 自己合併 PDF 或自己上網爬 Email；'
              '絕不能只在聊天室打一段「【信件草稿】」就說已存到草稿；存完提醒本人打開 Gmail 草稿匣確認後再自行寄出。'
              'brief、course、attachment、transcript、enrollment、sis 這類查詢直接回覆，不需要 agent_preferences review 或 tool_describe。')
 # "傳題目給我": kanban_create failed, the bot still answered "已接單" and then searched files for

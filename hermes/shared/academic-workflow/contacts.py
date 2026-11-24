@@ -13,7 +13,7 @@ import urllib.request
 
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 MAIL_INTENT = re.compile(
-    r'(?:寄信|寫信|發信|回信|傳信|mail|email)\s*給\s*([^，。！？?!\n]{2,28})'
+    r'(?:寄信|寫信|發信|回信|傳信|mail|email|草稿)\s*給\s*([^，。！？?!\n]{2,28})'
     r'|(?:查(?:一下|詢)?|找)\s*([^，。！？?!\n]{2,24}?)\s*的?\s*(?:email|e-mail|信箱|郵件)',
     re.I,
 )
