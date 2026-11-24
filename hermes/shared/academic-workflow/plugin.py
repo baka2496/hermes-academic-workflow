@@ -101,6 +101,11 @@ def register(ctx):
         # view_image, tried read_file on the JPEG and again said it had no way to see pictures.
         # Looking at the photo here does not depend on the model finding the tool.
         if found:context+=looker.context(found,str(user_message))
+        try:
+            import contacts
+            contact_ctx=contacts.lookup_context(config,workflow,str(user_message))
+            if contact_ctx:context+=contact_ctx
+        except Exception:pass
         if academic_question(workflow,str(user_message)):
             agenda=workflow.agenda()
             context+='學業總待辦由 academic_workflow 工具查詢。先查同一份紀錄再回答，不重建來源已有的任務；準備產物與本人完成分開。最新來源紀錄有 '+str(len(agenda))+' 項。'+BRIEF_RULE+COURSE_RULE
@@ -137,6 +142,10 @@ def register(ctx):
             elif action=='sis':
                 import brief
                 result=brief.sis_query(config,workflow,args.get('key',''),args.get('text',''))
+            elif action=='contact':
+                import contacts
+                q=args.get('text') or args.get('key') or ''
+                result=contacts.lookup(config,workflow,'查 '+str(q)+' 的 email') or {'name':q,'matches':[],'pages':[]}
             elif action=='leave_draft':
                 import brief
                 files=args.get('files') or []
@@ -184,7 +193,7 @@ def register(ctx):
     ctx.register_tool(name='academic_workflow',toolset='skills',schema={
         'name':'academic_workflow','description':'brief=近況完整清單（學業＋旅遊，手機排版，照貼不刪）；course=某門課（key=課名）的最新公告與待辦，含上課地點與附件檔名；attachment=下載某門課作業／公告的附件（key=課名，text=作業或公告名稱），回 files 路徑，用 MEDIA:路徑傳給本人；draft=把本人傳的照片／檔案存成 TronClass 作業草稿（key=課名，text=作業名稱，files=圖片路徑；只存草稿，本人自己按繳交）；transcript=下載官方數位成績單 PDF；enrollment=下載官方數位在學證明 PDF（text 可填英文或學期）；sis=查詢學生資訊平台（key=registration|courses|leave，text=關鍵字）；leave_draft=建立請假草稿（只存草稿不自動送出，可附本人傳的證明照片）；status=學業紀錄細節；source=讀原始來源；capture=記下本輪本人學業交代；submit=提交準備產物給協調器驗證。',
         'parameters':{'type':'object','required':['action'],'properties':{
-            'action':{'type':'string','enum':['brief','course','attachment','draft','transcript','enrollment','sis','leave_draft','status','source','capture','submit']},'key':{'type':'string'},
+            'action':{'type':'string','enum':['brief','course','attachment','draft','transcript','enrollment','sis','contact','leave_draft','status','source','capture','submit']},'key':{'type':'string'},
             'files':{'type':'array','items':{'type':'string'},'description':'draft/leave_draft：本人剛傳來的圖片或檔案路徑'},
             'text':{'type':'string','description':'capture：原文；attachment：作業名；transcript/enrollment：學期或版本；sis：搜尋關鍵字；leave_draft：請假事由'},
             'leave_type':{'type':'string','description':'leave_draft：假別（預設病假，如事假、病假、公假）'},

@@ -951,3 +951,31 @@ class TranscriptTests(unittest.TestCase):
         self.assertFalse(ok['submitted'])
         self.assertIn('還沒正式送出',ok['text'])
         self.assertIn('888',ok['text'])
+
+
+class ContactLookupTests(unittest.TestCase):
+    def test_extract_recipient_query_parses_org_and_name(self):
+        import contacts
+        parsed=contacts.extract_recipient_query('能幫我寄信給輔大資管系李博逸嗎')
+        self.assertEqual(parsed['name'],'李博逸')
+        self.assertEqual(parsed['org'],'輔大資管系')
+        self.assertIsNone(contacts.extract_recipient_query('今天天氣如何'))
+        self.assertIsNone(contacts.extract_recipient_query('寄信給 test@mail.fju.edu.tw'))
+
+    def test_lookup_context_finds_email_from_public_fju_page_and_injects_into_pre_llm_call(self):
+        import contacts,plugin
+        def fake_fetch(url,timeout=4):
+            if 'duckduckgo' in url:
+                return '<a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.im.fju.edu.tw%2Fteacher%2F">link</a>'
+            return '<html><body><h1>王小明</h1><a href="mailto:999999@mail.fju.edu.tw">Email</a></body></html>'
+        ctx_text=contacts.lookup_context({},None,'能幫我寄信給輔大資管系王小明嗎',fetch=fake_fetch,skip_gmail=True)
+        self.assertIn('999999@mail.fju.edu.tw',ctx_text)
+        self.assertIn('不要再反問',ctx_text)
+        # Verify pre_llm_call injects contact lookup context automatically
+        ctx=type('Ctx',(),{'hooks':{},'tools':{},'register_hook':lambda s,n,h:s.hooks.__setitem__(n,h),
+            'register_tool':lambda s,**k:s.tools.__setitem__(k['name'],k)})()
+        workflow=AcademicWorkflow(fixture_root())
+        with patch.object(plugin,'load',return_value=({},workflow)):plugin.register(ctx)
+        with patch.object(contacts,'lookup_context',return_value='\n【系統已自動查到】999999@mail.fju.edu.tw\n'):
+            out=ctx.hooks['pre_llm_call'](session_id='s1',platform='telegram',user_message='能幫我寄信給輔大資管系王小明嗎')
+        self.assertIn('999999@mail.fju.edu.tw',out['context'])
