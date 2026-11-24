@@ -1,6 +1,6 @@
 # Hermes 學業總指揮官
 
-小居把 TronClass、Gmail 和使用者交代的學業事項整理成同一份待辦。協調器在 Hermes 的 `command-center` 看板派發準備卡，驗證產物後可透過 Telegram 送出摘要和附件。本人仍負責學習、出席、考試和正式繳交。
+學業助理把 TronClass、Gmail 和使用者交代的學業事項整理成同一份待辦。協調器在 Hermes 的 `command-center` 看板派發準備卡，驗證產物後可透過 Telegram 送出摘要和附件。本人仍負責學習、出席、考試和正式繳交。
 
 儲存庫收錄協調器、來源讀取程式、Hermes 外掛、學業技能和測試。帳號憑證、課務資料、郵件、工作卡、通知收據及資料庫由本機管理。
 
@@ -26,7 +26,7 @@
 
 2. 將 `shared/academic-workflow/config.example.json` 複製為同目錄的 `config.json`，再填入本機絕對路徑。 `hermes_payload` 指向包含 `hermes-agent` 和 `venv` 的桌面版 `agent-payload`。 `runtime` 指向安裝後的 `shared/academic-workflow`。在 `runtime_python` 對應的 Python 環境安裝 `pydantic`、`openai`、`jiter` 和 `psutil`。狀態目錄 `state_root` 放在 Git checkout 外。
 
-3. 合併下列設定到兩個 profile 各自的 `config.yaml`。將 `external_dirs` 的範例換成本機路徑，並在 `commander` 設定 `cron.script_timeout_seconds: 1500`。啟動或重新載入 gateway 後，從小居查詢學業待辦以確認 `academic_workflow` 已載入。
+3. 合併下列設定到兩個 profile 各自的 `config.yaml`。將 `external_dirs` 的範例換成本機路徑，並在 `commander` 設定 `cron.script_timeout_seconds: 1500`。啟動或重新載入 gateway 後，從學業助理（`commander`）查詢學業待辦以確認 `academic_workflow` 已載入。
 
    ```yaml
    plugins:
@@ -59,7 +59,7 @@
 $env:HERMES_HOME = 'C:/path/to/hermes-home'
 $config = Get-Content -Raw "$env:HERMES_HOME/shared/academic-workflow/config.json" | ConvertFrom-Json
 hermes -p commander cron list --all
-hermes -p commander cron create '*/5 * * * *' --name '小居學業工作流' `
+hermes -p commander cron create '*/5 * * * *' --name '學業工作流' `
 	--script academic-coordinator.py --no-agent --deliver local --failure-deliver local `
 	--interpreter $config.runtime_python --workdir $config.runtime `
 	--timezone Asia/Taipei --catch-up off --paused

@@ -1,4 +1,4 @@
-"""Live regression test: ask 認真用功居 the questions the owner really asks, from the owner's own
+"""Live regression test: ask the academic assistant bot the questions the owner really asks, from the owner's own
 Telegram account, and check every answer against academic.db.
 
 Written after 11/18, when "傳題目給我" ran for five minutes: the earlier manual tests only asked
@@ -187,7 +187,7 @@ def render(results,out):
         '.bot{background:#fff;align-self:flex-start}.me{background:#e1ffc7;align-self:flex-end}'
         '.t{position:absolute;right:8px;bottom:2px;font-size:11px;color:#8a8a8a}'
         '.v{align-self:center;font-size:13px;padding:4px 10px;border-radius:10px;max-width:92%}.ok{background:#dff3d8;color:#235c1b}.bad{background:#fde2e1;color:#8a1f17}'
-        '</style><div class="h">認真用功居 回歸測試<small>'+datetime.now().strftime('%m/%d %H:%M')+'｜通過 '+str(passed)+'/'+str(total)
+        '</style><div class="h">學業助理 回歸測試<small>'+datetime.now().strftime('%m/%d %H:%M')+'｜通過 '+str(passed)+'/'+str(total)
         +'｜390px 手機寬度</small></div><div class="c">'+''.join(rows)+'</div>')
     out.mkdir(parents=True,exist_ok=True)
     page_path=out/'smoke.html';page_path.write_text(page,encoding='utf-8')

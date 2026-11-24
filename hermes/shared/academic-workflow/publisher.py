@@ -310,7 +310,7 @@ def prepare_health(workflow,config,*,now=None,recovery=(),gateways=None):
     if any(x['payload'].get('type')=='health' and x['state']=='pending' for x in workflow.publications()):return {'state':'awaiting_delivery'}
     attempt=workflow.get_meta('health_attempt') or {}
     if attempt.get('signature')==persistent and clock-datetime.fromisoformat(attempt['at'])<timedelta(hours=6):return {'state':'recently_attempted'}
-    lines=['🩺 小居學業工作流狀態']
+    lines=['🩺 學業工作流狀態']
     for name in persistent:lines.append('• '+HINTS[name])
     resolved=[x for x in alerted if x not in persistent]
     if resolved:lines.append('已恢復：'+'、'.join({'tronclass':'TronClass','gmail':'Gmail','interpretation':'解析服務','verification':'驗證服務','worker':'背景準備','gateway':'機器人版本'}.get(x,x) for x in resolved)+'。')
@@ -332,7 +332,7 @@ def scheduler_outcome(workflow,config,*,ok,error_type=None,now=None,transport=No
         alerted=workflow.get_meta('scheduler_alerted_at')
         if not alerted or not config.get('delivery_enabled'):return {'state':'ok'}
         try:
-            (transport or TelegramTransport(config)).send_text('✅ 小居學業排程已恢復正常執行。')
+            (transport or TelegramTransport(config)).send_text('✅ 學業排程已恢復正常執行。')
             workflow.delete_meta('scheduler_alerted_at')
             return {'state':'recovery_sent','failures':failures}
         except Exception as exc:return {'state':'recovery_unsent','error_type':type(exc).__name__}
@@ -342,7 +342,7 @@ def scheduler_outcome(workflow,config,*,ok,error_type=None,now=None,transport=No
     alerted=workflow.get_meta('scheduler_alerted_at')
     if alerted and clock-datetime.fromisoformat(alerted)<timedelta(hours=12):return {'state':'already_alerted','failures':failures}
     try:
-        (transport or TelegramTransport(config)).send_text('⚠️ 小居學業排程已連續 '+str(failures)+' 次失敗（'+str(error_type or 'Error')+'）。\n請在電腦上執行 academic.py doctor 檢查設定；問題排除前不會有新的學業整理。')
+        (transport or TelegramTransport(config)).send_text('⚠️ 學業排程已連續 '+str(failures)+' 次失敗（'+str(error_type or 'Error')+'）。\n請在電腦上執行 academic.py doctor 檢查設定；問題排除前不會有新的學業整理。')
         workflow.set_meta('scheduler_alerted_at',clock.isoformat())
         return {'state':'alert_sent','failures':failures}
     except Exception as exc:return {'state':'alert_unsent','failures':failures,'error_type':type(exc).__name__}

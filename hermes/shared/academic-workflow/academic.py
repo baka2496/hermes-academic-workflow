@@ -190,7 +190,7 @@ def telegram_test(config):
     from publisher import TelegramTransport
     transport=TelegramTransport(config)
     identity=transport.probe()
-    receipt=transport.send_text('✅ 小居學業工作流 Telegram 測試訊息。收到這則代表摘要與附件可以送達這個私人對話。')
+    receipt=transport.send_text('✅ 學業工作流 Telegram 測試訊息。收到這則代表摘要與附件可以送達這個私人對話。')
     return dict(identity,message_id=receipt['message_id'])
 
 

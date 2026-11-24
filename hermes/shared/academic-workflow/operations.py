@@ -228,22 +228,22 @@ def export_agenda(workflow,*,now=None,native=None,preparation=True):
         item=current.get(link['item_key'])
         if not item or item['revision']!=link['revision']:continue
         state=(native.get(link['task_id']) or {}).get('status','unknown') if native and link['task_id'] else '尚未接線'
-        label=('材料已驗證並已交付' if publication_states.get((link['item_key'],link['revision']))=='sent' else '材料已驗證，等待小居下次彙整交付') if link['verified'] and state=='done' else {'ready':'等待背景準備','running':'背景準備中','review':'內容驗證中','blocked':'保留現有材料，等待可恢復條件'}.get(state,'尚待準備')
+        label=('材料已驗證並已交付' if publication_states.get((link['item_key'],link['revision']))=='sent' else '材料已驗證，等待下次彙整交付') if link['verified'] and state=='done' else {'ready':'等待背景準備','running':'背景準備中','review':'內容驗證中','blocked':'保留現有材料，等待可恢復條件'}.get(state,'尚待準備')
         if link['error']=='verification_parked':label='驗證服務重試已達上限，保留產物；來源新版或服務處置後再恢復'
         lines.append('- '+cell(item.get('course'))+'／'+cell(item['title'])+'：'+label+'。')
     if historical:
         lines+=['','## 過期／已關閉項目','', '這些項目保留供核對，不推定你已經參加、完成或提交。','']
         for item in historical:lines.append('- '+cell(item.get('course'))+'／'+cell(item['title'])+'：'+date(item.get('due_at'))+'；'+{'past_exam':'考試時間已過','closed':'來源標示已關閉','overdue':'期限已過'}.get(item['human_state'],'待核對')+'。')
     if preparation:
-        lines+=['','## 自動處理方式','','```mermaid','flowchart LR','  A[課程與學業信件] --> B[共同待辦與期限]','  B --> C[背景準備材料]','  C --> D[獨立驗證]','  D --> E[小居彙整與送達確認]','  E --> F[本人學習 實作 考試 提交]','```','', '同一項目更新沿用同一張工作卡。驗證最多退回一次；通知以每日摘要為主，已確認期限將近才增加有限提醒。']
+        lines+=['','## 自動處理方式','','```mermaid','flowchart LR','  A[課程與學業信件] --> B[共同待辦與期限]','  B --> C[背景準備材料]','  C --> D[獨立驗證]','  D --> E[彙整與送達確認]','  E --> F[本人學習 實作 考試 提交]','```','', '同一項目更新沿用同一張工作卡。驗證最多退回一次；通知以每日摘要為主，已確認期限將近才增加有限提醒。']
     else:lines+=['','## 自動處理方式','','課程與學業信件整理成同一份待辦與期限；通知以每日摘要為主，已確認期限將近才增加有限提醒。']
     path=directory/'學業總覽.md';path.write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    calendar=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Xiaoju//Academic Workflow//ZH-TW','CALSCALE:GREGORIAN']
+    calendar=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Hermes//Academic Workflow//ZH-TW','CALSCALE:GREGORIAN']
     for item in active:
         if not item.get('due_at'):continue
         due=datetime.fromisoformat(item['due_at']).astimezone(__import__('datetime').timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         summary=(item.get('course','')+' '+item['title']).replace('\\','\\\\').replace(';','\\;').replace(',','\\,').replace('\n','\\n')
-        calendar+=['BEGIN:VTODO','UID:'+digest(item['key'])+'@xiaoju-academic','DTSTAMP:'+datetime.fromisoformat(clock).astimezone(__import__('datetime').timezone.utc).strftime('%Y%m%dT%H%M%SZ'),'DUE:'+due,'SUMMARY:'+summary,'STATUS:NEEDS-ACTION','END:VTODO']
+        calendar+=['BEGIN:VTODO','UID:'+digest(item['key'])+'@hermes-academic','DTSTAMP:'+datetime.fromisoformat(clock).astimezone(__import__('datetime').timezone.utc).strftime('%Y%m%dT%H%M%SZ'),'DUE:'+due,'SUMMARY:'+summary,'STATUS:NEEDS-ACTION','END:VTODO']
     calendar+=['END:VCALENDAR']
     (directory/'學業期限.ics').write_text('\r\n'.join(calendar)+'\r\n',encoding='utf-8')
     return path

@@ -853,3 +853,25 @@ class PhotoTests(unittest.TestCase):
         gate.set()
         self.assertEqual(looker.result(str(self.photo))['text'],'勞侖茲變換')
         self.assertEqual(len(calls),1)
+
+
+class PublicNamingTests(unittest.TestCase):
+    def test_no_private_bot_nicknames_in_tracked_files(self):
+        # Owner does not want custom bot nicknames exposed in the public GitHub repository.
+        # Patterns are encoded so the private nicknames never appear in plaintext here either.
+        forbidden=(
+            '\u5c0f\u5c45',
+            '\u8a8d\u771f\u7528\u529f\u5c45',
+            bytes.fromhex('7869616f6a75').decode('ascii'),
+        )
+        repo=Path(__file__).resolve().parents[1]
+        import subprocess
+        tracked=subprocess.check_output(['git','ls-files'],cwd=repo).decode('utf-8').splitlines()
+        hits=[]
+        for rel in tracked:
+            path=repo/rel
+            if not path.is_file():continue
+            text=path.read_text(encoding='utf-8',errors='ignore').lower()
+            for word in forbidden:
+                if word in text:hits.append(rel)
+        self.assertEqual(hits,[],'Found private bot nickname(s) in tracked files: '+', '.join(sorted(set(hits))))

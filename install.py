@@ -81,7 +81,7 @@ def create_cron(home):
     listing=subprocess.run(['hermes','-p','commander','cron','list','--all'],env=env,capture_output=True,text=True,encoding='utf-8')
     if listing.returncode:return 'skipped: hermes cron list 失敗：'+(listing.stderr or '').strip()[:200]
     if 'academic-coordinator.py' in listing.stdout:return 'exists: 已有 academic-coordinator.py 排程'
-    created=subprocess.run(['hermes','-p','commander','cron','create','*/5 * * * *','--name','小居學業工作流',
+    created=subprocess.run(['hermes','-p','commander','cron','create','*/5 * * * *','--name','學業工作流',
         '--script','academic-coordinator.py','--no-agent','--deliver','local','--failure-deliver','local',
         '--interpreter',config['runtime_python'],'--workdir',config['runtime'],
         '--timezone','Asia/Taipei','--catch-up','off','--paused'],env=env,capture_output=True,text=True,encoding='utf-8')
