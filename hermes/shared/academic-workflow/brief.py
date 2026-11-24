@@ -310,20 +310,31 @@ def transcript(config,workflow,query='',*,run=None):
     folder.mkdir(parents=True,exist_ok=True)
     q=str(query or '')
     no_ranking=bool(re.search(r'不含排名|不要排名|無排名|no[-_ ]?ranking',q,re.I))
-    sem=re.search(r'(\d{3})\s*(?:[-/－—]|學年度?第?)\s*([12])',q)
+    force_refresh=bool(re.search(r'重新下載|重抓|強制更新',q))
+    sems=[(int(a),int(b)) for a,b in re.findall(r'(\d{3})\s*(?:[-/－—]|學年度?第?)\s*([12])',q)]
+    is_range=len(sems)==2 and bool(re.search(r'到|至|~|～|－',q))
     args=['transcript','download','--out',str(folder),'--json']
-    if sem:args+=['--hy',sem.group(1),'--ht',sem.group(2)]
-    else:args.append('--all')
+    if len(sems)==1 and not is_range:
+        args+=['--hy',str(sems[0][0]),'--ht',str(sems[0][1])]
+    else:
+        args.append('--all')
     if no_ranking:args.append('--no-ranking')
+    if force_refresh:args.append('--refresh')
     payload,err=_run_sis(config,args,run=run)
     if err:return err
     items=payload.get('files') or []
+    if is_range:
+        lo,hi=sorted(sems)
+        items=[x for x in items if (int(x.get('hy',0)),int(x.get('ht',0)))>=lo and (int(x.get('hy',0)),int(x.get('ht',0)))<=hi]
+    elif len(sems)>1:
+        wanted=set(sems)
+        items=[x for x in items if (int(x.get('hy',0)),int(x.get('ht',0))) in wanted]
     files=[str(x['path']) for x in items if x.get('path') and Path(x['path']).is_file()]
     if not files:
         return dict(text='目前在輔大學生資訊平台查無可下載的數位成績單。',files=[])
     mode='不含排名' if no_ranking else '含排名'
-    sems='、'.join(str(x.get('hy',''))+'-'+str(x.get('ht','')) for x in items if x.get('path'))
-    lines=['📄 官方數位成績單（'+mode+'，共 '+str(len(files))+' 份）：'+sems]
+    sems_txt='、'.join(str(x.get('hy',''))+'-'+str(x.get('ht','')) for x in items if x.get('path'))
+    lines=['📄 官方數位成績單（'+mode+'，共 '+str(len(files))+' 份）：'+sems_txt]
     return dict(text='\n'.join(lines),files=files,
         reply='回覆時每個檔案單獨一行寫 MEDIA:檔案路徑，檔案就會傳到 Telegram。')
 

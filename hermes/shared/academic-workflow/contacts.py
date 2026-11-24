@@ -234,6 +234,36 @@ def _search_web_fju(name: str, org: str = '', *, fetch=None, budget_seconds: flo
     return hits, pages
 
 
+def _disk_cache_path(config: dict, workflow) -> Path | None:
+    root = config.get('state_dir') or (getattr(workflow, 'root', None) if workflow else None)
+    return (Path(root) / 'contacts_cache.json') if root else None
+
+
+def _load_disk_cache(path: Path | None, key: str) -> dict | None:
+    if not path or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        entry = data.get(key)
+        if entry and time.time() - float(entry.get('ts', 0)) < 7 * 86400 and entry.get('value', {}).get('matches'):
+            return entry['value']
+    except Exception:
+        pass
+    return None
+
+
+def _save_disk_cache(path: Path | None, key: str, value: dict) -> None:
+    if not path or not value.get('matches'):
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+        data[key] = {'ts': time.time(), 'value': value}
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
+    except Exception:
+        pass
+
+
 def lookup(config: dict, workflow, text: str, *, fetch=None, skip_gmail: bool = False) -> dict | None:
     parsed = extract_recipient_query(text)
     if not parsed:
@@ -242,16 +272,29 @@ def lookup(config: dict, workflow, text: str, *, fetch=None, skip_gmail: bool = 
     cached = _CACHE.get(cache_key)
     if cached and time.monotonic() - cached[0] < 600 and fetch is None:
         return cached[1]
+    disk_path = _disk_cache_path(config, workflow) if fetch is None else None
+    disk_hit = _load_disk_cache(disk_path, cache_key)
+    if disk_hit:
+        _CACHE[cache_key] = (time.monotonic(), disk_hit)
+        return disk_hit
     name, org = parsed['name'], parsed['org']
     hits = _search_local_db(workflow, name)
     pages: list[dict] = []
-    if not hits and not skip_gmail:
-        hits = _search_gmail(config, name)
     if not hits:
-        hits, pages = _search_web_fju(name, org, fetch=fetch)
+        if skip_gmail or not config.get('mailbox'):
+            hits, pages = _search_web_fju(name, org, fetch=fetch)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f_web = pool.submit(_search_web_fju, name, org, fetch=fetch)
+                f_mail = pool.submit(_search_gmail, config, name)
+                web_hits, pages = f_web.result()
+                mail_hits = f_mail.result()
+                hits = mail_hits or web_hits
     result = {'name': name, 'org': org, 'matches': hits, 'pages': pages}
     if fetch is None:
         _CACHE[cache_key] = (time.monotonic(), result)
+        _save_disk_cache(disk_path, cache_key, result)
     return result
 
 

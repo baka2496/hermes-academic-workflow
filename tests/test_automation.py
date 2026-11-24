@@ -904,6 +904,18 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn('--ht',seen[1]);self.assertIn('1',seen[1])
         self.assertIn('--no-ranking',seen[1])
         self.assertIn('不含排名',res_one['text'])
+        def fake_range(argv):
+            seen.append(argv)
+            out_dir=Path(argv[argv.index('--out')+1])
+            items=[]
+            for hy,ht in [(113,1),(113,2),(114,1),(114,2),(115,1)]:
+                p=out_dir/f'{hy}-{ht}_學期數位成績單_含排名.pdf';p.write_bytes(b'%PDF-1.7\nok')
+                items.append({'hy':hy,'ht':ht,'path':str(p),'size':11})
+            return Done(0,json.dumps({'files':items}).encode('utf-8'))
+        res_rng=brief.transcript(config,workflow,'113-1到114-2的成績單',run=fake_range)
+        self.assertIn('--all',seen[2])
+        self.assertEqual(len(res_rng['files']),4)
+        self.assertNotIn('115-1',res_rng['text'])
         fail=brief.transcript(config,workflow,'',run=lambda a:Done(1,err='錯誤：尚未登入'.encode('utf-8')))
         self.assertEqual(fail['error'],'sis_failed')
         self.assertIn('fjusis login',fail['text'])
