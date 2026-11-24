@@ -450,6 +450,27 @@ def mail_draft(config,workflow,*,to='',subject='',body='',paths=None,roots=(),ru
     bad=[p for p in clean_paths if not allowed_file(p,allowed_roots)]
     if bad:
         return dict(error='file_not_allowed',text='只能附上本機學業檔案（成績單、在學證明、課程附件或剛傳的檔案）：'+'、'.join(Path(p).name for p in bad))
+    merged_note=''
+    if len(clean_paths)>1 and all(Path(p).suffix.lower()=='.pdf' for p in clean_paths) and sum(Path(p).stat().st_size for p in clean_paths)>18*1024*1024:
+        import mail_draft as md
+        orig_mb=round(sum(Path(p).stat().st_size for p in clean_paths)/(1024*1024),1)
+        mname=('歷年數位成績單_合併' if any('成績單' in Path(p).name for p in clean_paths) else '合併附件_')+str(len(clean_paths))+'份.pdf'
+        target=state_root/'transcripts'/mname
+        merged=md.merge_pdfs([Path(p) for p in clean_paths],target)
+        if not merged and run is None:
+            # Hermes venv may lack PyMuPDF while mail_python has it; delegate merge to mail_python.
+            mcode=('import pathlib, sys; sys.path.insert(0, sys.argv[1]); import mail_draft as md; '
+                   'out=md.merge_pdfs([pathlib.Path(x) for x in sys.argv[3:]], pathlib.Path(sys.argv[2])); '
+                   'print(str(out) if out else "")')
+            try:
+                done=subprocess.run([py,'-X','utf8','-c',mcode,str(Path(__file__).parent),str(target)]+clean_paths,
+                    capture_output=True,timeout=60,env=cli_env(),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                if done.returncode==0 and target.is_file() and target.stat().st_size>0:merged=target
+            except Exception:pass
+        if merged and merged.stat().st_size<=18*1024*1024:
+            new_mb=round(merged.stat().st_size/(1024*1024),1)
+            merged_note='（已將 '+str(len(clean_paths))+' 份 PDF 無損合併壓縮為 1 份：'+str(orig_mb)+' MB → '+str(new_mb)+' MB）'
+            clean_paths=[str(merged)]
     batches=_pack_attachment_batches(clean_paths)
     if batches is None:
         return dict(error='single_file_too_large',text='單一附件超過 18 MB（編碼後超過 Gmail 25 MB 上限），無法存入 Gmail 草稿。')
@@ -470,7 +491,8 @@ def mail_draft(config,workflow,*,to='',subject='',body='',paths=None,roots=(),ru
             return dict(error=res.get('error') or 'draft_failed',text='❌ 寫入 Gmail 草稿匣失敗：'+str(res.get('message') or res.get('error')),created=created)
         created.append(res)
     lines=['✅ 已實際存入你的 Gmail 草稿匣（共 '+str(len(created))+' 封草稿）']
-    if len(created)>1:
+    if merged_note:lines.append(merged_note)
+    elif len(created)>1:
         lines.append('（因附件總大小超過 Gmail 單封 25 MB 上限，已自動拆成 '+str(len(created))+' 封草稿）')
     for c in created:
         names='、'.join(a['name'] for a in (c.get('attachments') or [])) or '無附件'

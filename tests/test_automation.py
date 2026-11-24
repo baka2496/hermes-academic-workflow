@@ -1019,3 +1019,29 @@ class ContactLookupTests(unittest.TestCase):
         self.assertIn('(1/2)',seen[0]['subject'])
         self.assertIn('(2/2)',seen[1]['subject'])
         self.assertIn('已實際存入你的 Gmail 草稿匣',ok['text'])
+
+    def test_mail_draft_merges_multiple_pdfs_into_single_draft_when_possible(self):
+        import brief,mail_draft
+        root=fixture_root()
+        workflow=AcademicWorkflow(root)
+        tr_dir=root/'transcripts';tr_dir.mkdir(parents=True)
+        pdfs=[]
+        for name in ('113-1_成績單.pdf','113-2_成績單.pdf','114-1_成績單.pdf','114-2_成績單.pdf'):
+            p=tr_dir/name;p.write_bytes(b'%PDF-1.7' + b'0'*(6*1024*1024))
+            pdfs.append(str(p))
+        config={'mailbox':'C:/fake/mailbox.py','mail_python':'C:/fake/python.exe','state_dir':str(root)}
+        def fake_merge(paths,out_path):
+            out_path.write_bytes(b'%PDF-1.7' + b'0'*(5*1024*1024))
+            return out_path
+        seen=[]
+        class Done:
+            def __init__(self,out):self.stdout=out.encode('utf-8')
+        def fake_run(payload):
+            seen.append(payload)
+            return Done(json.dumps({'ok':True,'verified':True,'to':payload['to'],'subject':payload['subject'],
+                'attachments':[{'name':Path(x).name,'size':1} for x in payload['attachments']]}))
+        with patch.object(mail_draft,'merge_pdfs',side_effect=fake_merge):
+            ok=brief.mail_draft(config,workflow,to='166997@mail.fju.edu.tw',subject='檢附歷年成績單',body='老師您好',paths=pdfs,run=fake_run)
+        self.assertEqual(len(seen),1)
+        self.assertEqual(seen[0]['subject'],'檢附歷年成績單')
+        self.assertIn('無損合併壓縮為 1 份',ok['text'])

@@ -17,6 +17,27 @@ import time
 MAX_RAW_ATTACHMENTS_BYTES = 18 * 1024 * 1024
 
 
+def merge_pdfs(paths: list[Path], out_path: Path) -> Path | None:
+    """Losslessly merge multiple PDFs and deduplicate embedded fonts/objects via PyMuPDF."""
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        try:
+            import fitz
+        except ImportError:
+            return None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    merged = fitz.open()
+    try:
+        for p in paths:
+            with fitz.open(p) as doc:
+                merged.insert_pdf(doc)
+        merged.save(out_path, garbage=4, deflate=True, clean=True)
+    finally:
+        merged.close()
+    return out_path if out_path.is_file() and out_path.stat().st_size > 0 else None
+
+
 def create_draft(mailbox_path: str, to_addr: str, subject: str, body: str, attachments: list[str] = ()) -> dict:
     to_addr = str(to_addr or '').strip()
     if not re.fullmatch(r'[^@\s<>]+@[^@\s<>]+', to_addr):
@@ -26,6 +47,16 @@ def create_draft(mailbox_path: str, to_addr: str, subject: str, body: str, attac
     if missing:
         return {'ok': False, 'error': 'missing_file', 'message': '找不到附件：' + '、'.join(Path(x).name for x in missing)}
     total_bytes = sum(p.stat().st_size for p in files)
+    merged_note = ''
+    if total_bytes > MAX_RAW_ATTACHMENTS_BYTES and len(files) > 1 and all(p.suffix.lower() == '.pdf' for p in files):
+        merged_name = ('歷年數位成績單_合併' if any('成績單' in p.name for p in files) else '合併附件_') + f'{len(files)}份.pdf'
+        merged_path = merge_pdfs(files, files[0].parent / merged_name)
+        if merged_path and merged_path.stat().st_size <= MAX_RAW_ATTACHMENTS_BYTES:
+            orig_mb = round(total_bytes / (1024 * 1024), 1)
+            new_mb = round(merged_path.stat().st_size / (1024 * 1024), 1)
+            merged_note = f'已自動將 {len(files)} 份 PDF 無損合併壓縮為 1 份（{orig_mb} MB → {new_mb} MB）'
+            files = [merged_path]
+            total_bytes = merged_path.stat().st_size
     if total_bytes > MAX_RAW_ATTACHMENTS_BYTES:
         mb = round(total_bytes / (1024 * 1024), 1)
         return {
@@ -76,6 +107,7 @@ def create_draft(mailbox_path: str, to_addr: str, subject: str, body: str, attac
             'message_id': draft_mid,
             'attachments': attached,
             'total_mb': round(total_bytes / (1024 * 1024), 2),
+            'merged_note': merged_note,
         }
 
 
