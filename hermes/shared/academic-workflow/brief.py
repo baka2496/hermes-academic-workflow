@@ -19,15 +19,23 @@ DONE_TRIP={'已完成','已取消','已結束','已放棄'}
 
 
 def when(due,clock):
+    # TronClass writes "end of 12/01" as 12/02 00:00. The daily digest says 12/01 24:00; this list
+    # said 12/02, so the same homework showed two different days (11/25).
+    if due.strftime('%H:%M')=='00:00':
+        end=due-timedelta(minutes=1)
+        if end.date()==clock.date():return '今天24:00'
+        if end.date()==(clock+timedelta(days=1)).date():return '明天24:00'
+        return end.strftime('%m/%d')+'（'+WEEKDAY[end.weekday()]+'）24:00'
     day=due.strftime('%m/%d')
     if due.date()==clock.date():return '今天'+due.strftime('%H:%M')
     if due.date()==(clock+timedelta(days=1)).date():return '明天'+due.strftime('%H:%M')
     return day+'（'+WEEKDAY[due.weekday()]+'）'
 
 
-def short(text,width=12):
-    text=re.sub(r'[【】\[\]「」"“”]','',text or '').strip()
-    return text if len(text)<=width else text[:width-1]+'…'
+def clean(text):
+    # 11/25 the owner: titles cut to 12 characters with "…" ("國際關係與亞太現勢 國關…" twice) hid what
+    # each item was. Telegram wraps long lines on the phone, so titles are shown in full.
+    return re.sub(r'\s+',' ',re.sub(r'[【】\[\]「」"“”]','',text or '')).strip()
 
 
 def academic(workflow,clock,days):
@@ -42,7 +50,7 @@ def academic(workflow,clock,days):
         course=re.sub(r'[（(][^）)]*[）)]?$','',item.get('course') or '').strip()
         title=re.sub(r'[【】\[\]「」"“”]','',item.get('title','')).replace(course,'').strip() if course else item.get('title','')
         # Same rule as the overview table: a date read out of an announcement still needs checking.
-        shown.append(dict(due=due,name=short((course+' ' if course else '')+title,13),when=when(due,clock),
+        shown.append(dict(due=due,name=clean((course+' ' if course else '')+title),when=when(due,clock),
             tentative=item.get('confidence')=='needs_check' or bool(item.get('deadline_conflicts'))))
     return sorted(shown,key=lambda x:x['due']),later,undated
 
@@ -75,7 +83,7 @@ def trips(path,clock):
         status=record.get('status','')
         label={'不符合':'不符合條件，待你決定'}.get(status,status)
         title=re.sub(r'（.*?）|規劃|\(.*?\)','',record.get('title','')).strip()
-        result.append(dict(id=record.get('id'),name=short(title,12),when=span,status=label,problems=problems))
+        result.append(dict(id=record.get('id'),name=clean(title),when=span,status=label,problems=problems))
     return result
 
 
@@ -83,7 +91,9 @@ def build(config,workflow,*,now=None,days=14):
     clock=datetime.fromisoformat(now) if now else datetime.now().astimezone()
     items,later,undated=academic(workflow,clock,days)
     lines=['📚 學業（'+str(days)+' 天內）']
-    lines+=['• '+x['name']+'｜'+x['when']+('＊' if x['tentative'] else '') for x in items] or ['• 沒有']
+    # Name on its own line, date under it: a long name wraps without pushing the date off screen.
+    for x in items:lines+=['• '+x['name'],'  '+x['when']+('＊' if x['tentative'] else '')]
+    if not items:lines.append('• 沒有')
     extra=[]
     if later:extra.append(str(later)+' 項較晚')
     if undated:extra.append(str(undated)+' 項日期待確認')
@@ -95,8 +105,8 @@ def build(config,workflow,*,now=None,days=14):
     if found is None:lines.append('• 旅遊紀錄讀不到（未確認）')
     else:
         for x in found:
-            lines.append('• '+x['name']+'｜'+x['when'])
-            lines.append('  '+x['status']+('｜⚠️紀錄矛盾：'+'、'.join(x['problems']) if x['problems'] else ''))
+            lines.append('• '+x['name'])
+            lines.append('  '+x['when']+'｜'+x['status']+('｜⚠️紀錄矛盾：'+'、'.join(x['problems']) if x['problems'] else ''))
         if not found:lines.append('• 沒有進行中的旅遊')
     return dict(text='\n'.join(lines),academic=[{k:v for k,v in x.items() if k!='due'} for x in items],
         academic_later=later,academic_undated=undated,trips=found,generated_at=clock.isoformat(timespec='minutes'))
@@ -127,13 +137,13 @@ def course(workflow,name,*,now=None,announcements=3):
         for post in posts:
             day=datetime.fromisoformat(post['published_at']) if post.get('published_at') else None
             stamp='今天' if day and day.date()==clock.date() else day.strftime('%m/%d') if day else '日期未知'
-            lines.append('• '+stamp+' '+short(post.get('title'),14)+'：'+re.sub(r'\s+',' ',post.get('description') or '').strip()[:120])
+            lines.append('• '+stamp+' '+clean(post.get('title'))+'：'+re.sub(r'\s+',' ',post.get('description') or '').strip()[:120])
         open_items=[x for x in workflow.agenda(now=clock.isoformat()) if x.get('course')==title and x.get('human_state')=='open']
         if open_items:
             lines.append('📝 待辦')
             for item in sorted(open_items,key=lambda x:x.get('due_at') or '9999')[:5]:
                 due=datetime.fromisoformat(item['due_at']) if item.get('due_at') else None
-                lines.append('• '+short(item.get('title'),14)+'｜'+(when(due,clock) if due else '日期待確認'))
+                lines+=['• '+clean(item.get('title')),'  '+(when(due,clock) if due else '日期待確認')]
                 # The question sheet of "HW#3" is its PDF; without the name the bot went hunting for it.
                 for file in files_of(raw.get(item['key'],{})):lines.append('  📎 '+file['name'])
     return dict(text='\n'.join(lines),matched=matched,checked_at=checked)

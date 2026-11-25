@@ -110,7 +110,8 @@ def item_label(item):
     course=re.sub(r'[（(][^）)]*[）)]?$','',item.get('course') or '').strip()
     if course:title=title.replace(course,'').strip() or title
     head=course or KIND.get(item.get('kind'),'')
-    return fit((head+'｜' if head else '')+title,PHONE_LINE-2)
+    # 11/25: no "…" — a cut title ("國關課 交期中報…") hid what the item was; Telegram wraps it.
+    return (head+'｜' if head else '')+title
 
 
 def due_line(item,clock):
