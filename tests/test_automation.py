@@ -211,7 +211,7 @@ class PhoneDisplayTests(unittest.TestCase):
     # The owner reads every bot on an iPhone; tables and code blocks wrap into an unreadable block.
     PHONE_LINE=21 # characters per line in the owner's Telegram screenshot
 
-    def test_digest_has_no_tables_and_every_line_fits_two_phone_lines(self):
+    def test_digest_has_no_tables_and_shows_titles_in_full(self):
         workflow=AcademicWorkflow(fixture_root());workflow.set_meta('first_preparation_verified',True)
         items=[dict(id='h'+str(n),kind='homework',title='非常長的作業標題用來測試手機寬度第'+str(n)+'份',course='國際關係與亞太局勢',
             due_at='2026-11-1'+str(n)+'T23:59:00+08:00',submitted=False,closed=False) for n in range(1,8)]
@@ -220,7 +220,10 @@ class PhoneDisplayTests(unittest.TestCase):
         transport=sent_ok();workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
         text=transport.texts[0]
         for bad in ('```','│','|---'):self.assertNotIn(bad,text)
-        for line in text.splitlines():self.assertLessEqual(phone_width(line),self.PHONE_LINE,line)
+        # 11/25: titles are never cut with "…"; a long title wraps, the date stays on its own short line.
+        self.assertNotIn('…',text);self.assertIn('國際關係｜非常長的作業標題用來測試手機寬度第1份',text)
+        for line in text.splitlines():
+            if not line.startswith('• '):self.assertLessEqual(phone_width(line),self.PHONE_LINE,line)
 
     def test_daily_digest_sends_no_overview_file(self):
         # 11/19 the owner: the attached 學業總覽.md "不是很有用"; on the phone it is a raw Markdown table.
@@ -234,12 +237,16 @@ class PhoneDisplayTests(unittest.TestCase):
         # The file is still written on the computer for the other bots that read it.
         self.assertTrue((workflow.root/'exports/學業總覽.md').exists())
 
-    def test_long_course_and_title_are_cut_cleanly(self):
+    def test_names_drop_repeats_but_are_never_cut(self):
+        # 11/25 the owner: cut with … hid the item; in full it was "名稱太長了".
         from publisher import item_label
         self.assertEqual(item_label(dict(course='作業系統',title='作業3')),'作業系統｜作業3')
-        self.assertEqual(item_label(dict(course='固態物理導論',title='【期中考座位】')),'固態物理導論｜期中考座位')
-        self.assertEqual(item_label(dict(kind='email',title='歡迎參加115.11.17(二)輔仁大學助學方案暨就學貸款宣導講習')),'信件｜輔仁大學助學方案暨就學貸款宣導…')
-        self.assertLessEqual(phone_width('• '+item_label(dict(course='國際關係與亞太現勢',title='國關課 交期中報告 日期修正'))),self.PHONE_LINE)
+        self.assertEqual(item_label(dict(course='固態物理導論',title='【期中考座位】')),'固態物理｜期中考座位')
+        self.assertEqual(item_label(dict(kind='email',title='歡迎參加115.11.17(二)輔仁大學助學方案暨就學貸款宣導講習')),'信件｜輔仁大學助學方案暨就學貸款宣導講習')
+        self.assertEqual(item_label(dict(course='國際關係與亞太現勢',title='國關課 交期中報告 日期修正')),'國際關係｜交期中報告')
+        self.assertEqual(item_label(dict(course='國際關係與亞太現勢',title='國關課12/4日收繳期中報告紙本 須知')),'國際關係｜收繳期中報告紙本')
+        self.assertEqual(item_label(dict(course='國際關係與亞太現勢',title='10/30 國關課 上課 須知')),'國際關係｜上課 須知') # never shrinks to 上課
+        self.assertEqual(item_label(dict(course='體育',title='9/14，2公里跑走')),'體育｜2公里跑走')
 
     def test_telegram_academic_question_gets_phone_format_rule(self):
         import plugin
@@ -393,9 +400,24 @@ class BriefTests(unittest.TestCase):
                 dict(course='量子',title='讀長文',human_state='open'),
                 dict(course='服飾',title='第五次考試',due_at='2026-11-09T15:40:00+08:00',human_state='past_exam')]
         text=self.build(agenda,[])['text']
-        for expected in ('今天16:40＊','＊日期由公告推導，待核對','11/17（二）','11/18（三）','另有 1 項較晚、1 項日期待確認'):self.assertIn(expected,text)
+        for expected in ('今天16:40＊','＊日期由公告推導，待核對','11/17（二）','11/17（二）24:00','另有 1 項較晚、1 項日期待確認'):self.assertIn(expected,text)
+        self.assertNotIn('11/18',text) # same 24:00 wording as the daily digest
         self.assertNotIn('第五次考試',text)
         self.assertNotIn('|',text)  # phone format: no table
+
+    def test_names_are_short_but_never_cut(self):
+        # 11/25 the owner's phone: "國際關係與亞太現勢 國關…" twice hid what each item was ("後面的字都被
+        # 截掉了"); shown in full it was "名稱太長了". Names drop repeats, never letters.
+        agenda=[dict(course='國際關係與亞太現勢',title='國關課 交期中報告 日期修正',due_at='2026-11-20T23:59:00+08:00',human_state='open'),
+                dict(course='國際關係與亞太現勢',title='國關課12/4日收繳期中報告紙本 須知',due_at='2026-11-20T23:59:00+08:00',human_state='open',confidence='needs_check')]
+        trips=[dict(id='k',title='日本九州大分直飛來回機票與溫泉五天四夜',status='不符合',user_decision={'status':'pending'},outbound_date='2026-11-21',return_date='2026-11-28')]
+        text=self.build(agenda,trips)['text']
+        self.assertNotIn('…',text)
+        lines=text.split(chr(10))
+        self.assertIn('• 國際關係 交期中報告｜11/20（五）',lines)
+        self.assertIn('• 國際關係 收繳期中報告紙本',lines);self.assertIn('  11/20（五）＊',lines) # too wide: date on the next line
+        self.assertIn('日本九州大分直飛來回機票與溫泉五天四夜',text)
+        for line in lines:self.assertLessEqual(phone_width(line),PhoneDisplayTests.PHONE_LINE,line)
 
     def test_trips_waiting_for_a_decision_are_never_dropped(self):
         trips=[dict(id='a',title='阿里山兩天一夜看日出（雙人）',status='不符合',user_decision={'status':'pending'},outbound_date='2026-12-19',return_date='2026-12-20'),
@@ -514,6 +536,17 @@ class CourseQuestionTests(unittest.TestCase):
         self.assertIn('今天',lines[2]);self.assertIn('籃排球場',lines[2])
         self.assertIn('找不到',brief.course(self.workflow(),'微積分',now=self.NOW)['text'])
 
+    def test_newest_announcement_is_shown_whole_and_older_ones_by_title(self):
+        # 11/25: bodies were cut at 120 characters mid-sentence with no mark ("…上課 第一章～第六章").
+        import brief
+        body='1.請於12月4日（週五）把期中報告紙本交至課堂；'+'遲交一周扣5分，'*20+'最後一句在這裡。'
+        rows=[dict(id='n1',kind='announcement',course='國際關係與亞太現勢',title='國關課12/4日收繳期中報告紙本 須知',description=body,published_at='2026-11-25T10:00:00+08:00'),
+              dict(id='n0',kind='announcement',course='國際關係與亞太現勢',title='第六章 上課大綱',description='如下附檔～',published_at='2026-11-20T10:00:00+08:00')]
+        workflow=AcademicWorkflow(fixture_root());workflow.ingest('tronclass','announcement',rows,complete=True)
+        text=brief.course(workflow,'國際關係',now='2026-11-25T17:00:00+08:00')['text']
+        self.assertGreater(len(body),120);self.assertIn('最後一句在這裡。',text)
+        self.assertIn('• 11/20 第六章 上課大綱',text);self.assertNotIn('如下附檔',text)
+
     def test_course_question_triggers_the_course_rule(self):
         # "體育課在哪裡上課" matched no topic word, so the bot spent 3.5 minutes searching files and logs.
         import plugin
@@ -539,7 +572,7 @@ class ClearDigestTests(unittest.TestCase):
     def test_exam_names_its_course_and_time(self):
         exam=dict(id='e1',kind='exam',title='1116第六次考試',course='中華服飾設計與文化',due_at='2026-11-16T15:40:00+08:00',submitted=False,closed=False)
         _,_,text=self.sent([('tronclass','exam',[exam],True)],'2026-11-16T12:04:00+08:00')
-        self.assertIn('中華服飾設計與文化｜1116第六次考試',text)
+        self.assertIn('中華服飾設計｜1116第六次考試',text)
         self.assertIn('今天 15:40（還有 3 小時）',text)
         self.assertIn('24 小時內',text)
         for line in text.splitlines():self.assertLessEqual(phone_width(line),PhoneDisplayTests.PHONE_LINE,line)
