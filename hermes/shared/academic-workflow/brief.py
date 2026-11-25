@@ -33,9 +33,45 @@ def when(due,clock):
 
 
 def clean(text):
-    # 11/25 the owner: titles cut to 12 characters with "…" ("國際關係與亞太現勢 國關…" twice) hid what
-    # each item was. Telegram wraps long lines on the phone, so titles are shown in full.
     return re.sub(r'\s+',' ',re.sub(r'[【】\[\]「」"“”]','',text or '')).strip()
+
+
+# 11/25 the owner, twice: titles cut to 12 characters with "…" ("國際關係與亞太現勢 國關…" for two
+# different items) hid what each item was; shown in full they were too long ("名稱太長了"). So names
+# drop only what repeats something already shown, and are never cut mid-word.
+def short_course(name):
+    """國際關係與亞太現勢 -> 國際關係, 半導體物理導論 -> 半導體物理, 量子物理(一) -> 量子物理."""
+    name=re.sub(r'[（(][^）)]*[）)]?$','',name or '').strip()
+    core=re.split(r'[與及和]',name)[0]
+    return re.sub(r'(導論|概論|入門)$','',core) or core or name
+
+
+def short_title(title,course=''):
+    """國關課12/4日收繳期中報告紙本 須知 -> 收繳期中報告紙本: the course and its nickname are shown
+    already, the date sits on the date line, and 須知／日期修正／公告 say nothing about the task."""
+    text=clean(title)
+    full=re.sub(r'[（(][^）)]*[）)]?$','',course or '').strip()
+    for name in sorted({full,short_course(course)} if course else set(),key=len,reverse=True):
+        if name:text=text.replace(name,' ')
+    # A nickname like 國關課: every character comes from the course name ("上課" does not).
+    text=re.sub(r'([^\s\d]{1,3})課',lambda m:' ' if full and all(c in full for c in m.group(1)) else m.group(0),text)
+    text=re.sub(r'(\d{2,4}\.)?\d{1,2}[./]\d{1,2}日?\s*([（(][一二三四五六日][）)])?',' ',text)
+    text=re.sub(r'^[\s，,、:：]*(關於|歡迎參加)?[\s，,、:：]*','',text)
+    while True:
+        cut=re.sub(r'[\s!！.。…]*(日期修正|須知|公告|通知|說明)?[\s!！.。…]*$','',text)
+        # "上課須知" alone would become "上課", which says nothing.
+        if cut==text or len(cut.strip())<3:break
+        text=cut
+    text=re.sub(r'[\s!！.。…]+$','',re.sub(r'\s+',' ',text)).strip()
+    return text or clean(title)
+
+
+def width(text):
+    # Chinese and full-width characters take a whole cell on the phone; digits and latin about half.
+    return sum(1 if ord(c)>=0x2E80 else 0.55 for c in text)
+
+
+PHONE_LINE=21 # characters per line in the owner's iPhone Telegram
 
 
 def academic(workflow,clock,days):
@@ -47,10 +83,10 @@ def academic(workflow,clock,days):
         if not item.get('due_at'):undated+=1;continue
         due=datetime.fromisoformat(item['due_at'])
         if due-clock>timedelta(days=days):later+=1;continue
-        course=re.sub(r'[（(][^）)]*[）)]?$','',item.get('course') or '').strip()
-        title=re.sub(r'[【】\[\]「」"“”]','',item.get('title','')).replace(course,'').strip() if course else item.get('title','')
+        course=short_course(item.get('course'))
+        title=short_title(item.get('title',''),item.get('course') or '')
         # Same rule as the overview table: a date read out of an announcement still needs checking.
-        shown.append(dict(due=due,name=clean((course+' ' if course else '')+title),when=when(due,clock),
+        shown.append(dict(due=due,name=(course+' ' if course else '')+title,when=when(due,clock),
             tentative=item.get('confidence')=='needs_check' or bool(item.get('deadline_conflicts'))))
     return sorted(shown,key=lambda x:x['due']),later,undated
 
@@ -91,8 +127,10 @@ def build(config,workflow,*,now=None,days=14):
     clock=datetime.fromisoformat(now) if now else datetime.now().astimezone()
     items,later,undated=academic(workflow,clock,days)
     lines=['📚 學業（'+str(days)+' 天內）']
-    # Name on its own line, date under it: a long name wraps without pushing the date off screen.
-    for x in items:lines+=['• '+x['name'],'  '+x['when']+('＊' if x['tentative'] else '')]
+    # One line when it fits the phone; otherwise the date goes under the name instead of being pushed off.
+    for x in items:
+        line='• '+x['name']+'｜'+x['when']+('＊' if x['tentative'] else '')
+        lines+=[line] if width(line)<=PHONE_LINE else ['• '+x['name'],'  '+line.split('｜')[-1]]
     if not items:lines.append('• 沒有')
     extra=[]
     if later:extra.append(str(later)+' 項較晚')
@@ -134,16 +172,20 @@ def course(workflow,name,*,now=None,announcements=3):
         posts=sorted((x for x in items if x.get('course')==title and x.get('kind')=='announcement' and not x.get('closed')),
             key=lambda x:x.get('published_at') or '',reverse=True)[:announcements]
         lines.append('📢 最新公告' if posts else '📢 沒有公告')
-        for post in posts:
+        for n,post in enumerate(posts):
             day=datetime.fromisoformat(post['published_at']) if post.get('published_at') else None
             stamp='今天' if day and day.date()==clock.date() else day.strftime('%m/%d') if day else '日期未知'
-            lines.append('• '+stamp+' '+clean(post.get('title'))+'：'+re.sub(r'\s+',' ',post.get('description') or '').strip()[:120])
+            # 11/25: every body was cut at 120 characters mid-sentence ("…上課 第一章～第六章") with no mark.
+            # The newest one is shown whole; older ones by title, so nothing reads as complete when it is not.
+            body=re.sub(r'\s+',' ',post.get('description') or '').strip() if n==0 else ''
+            lines.append('• '+stamp+' '+short_title(post.get('title'),title)+('：'+body if body else ''))
         open_items=[x for x in workflow.agenda(now=clock.isoformat()) if x.get('course')==title and x.get('human_state')=='open']
         if open_items:
             lines.append('📝 待辦')
             for item in sorted(open_items,key=lambda x:x.get('due_at') or '9999')[:5]:
                 due=datetime.fromisoformat(item['due_at']) if item.get('due_at') else None
-                lines+=['• '+clean(item.get('title')),'  '+(when(due,clock) if due else '日期待確認')]
+                line='• '+short_title(item.get('title'),title)+'｜'+(when(due,clock) if due else '日期待確認')
+                lines+=[line] if width(line)<=PHONE_LINE else line.split('｜',1)[:1]+['  '+line.split('｜')[-1]]
                 # The question sheet of "HW#3" is its PDF; without the name the bot went hunting for it.
                 for file in files_of(raw.get(item['key'],{})):lines.append('  📎 '+file['name'])
     return dict(text='\n'.join(lines),matched=matched,checked_at=checked)

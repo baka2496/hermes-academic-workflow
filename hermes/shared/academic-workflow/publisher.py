@@ -101,16 +101,11 @@ def fit(text,limit):
 
 
 def item_label(item):
-    """Course and title together: "1116第六次考試" alone did not say which class had the exam."""
-    import re
-    title=re.sub(r'[【】\[\]「」"“”]','',item.get('title','')).strip()
-    # Leading greetings and a date already shown on the next line only push the subject off screen.
-    title=re.sub(r'^(歡迎參加|關於|公告[:：]?)','',title).strip() or title
-    title=re.sub(r'^\d{2,4}[./]\d{1,2}[./]\d{1,2}\s*([（(].[）)])?','',title).strip() or title
-    course=re.sub(r'[（(][^）)]*[）)]?$','',item.get('course') or '').strip()
-    if course:title=title.replace(course,'').strip() or title
-    head=course or KIND.get(item.get('kind'),'')
-    # 11/25: no "…" — a cut title ("國關課 交期中報…") hid what the item was; Telegram wraps it.
+    """Course and title together: "1116第六次考試" alone did not say which class had the exam.
+    Same short names as the recent-activity list (brief.short_course / short_title), never cut with "…"."""
+    import brief
+    head=brief.short_course(item.get('course')) if item.get('course') else KIND.get(item.get('kind'),'')
+    title=brief.short_title(item.get('title',''),item.get('course') or '')
     return (head+'｜' if head else '')+title
 
 
