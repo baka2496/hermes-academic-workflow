@@ -1100,8 +1100,12 @@ class ContactLookupTests(unittest.TestCase):
         cfg={'daily_hour':8,'always_send_daily':True}
         prepare_digest(workflow,cfg,native=native,now='2026-11-09T08:00:00+08:00')
         workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
-        same_day=prepare_digest(workflow,cfg,native=native,now='2026-11-09T09:00:00+08:00')
-        self.assertEqual(same_day['state'],'slot_already_prepared')
+        # Same day (including later active hours): never resends when nothing changed.
+        self.assertEqual(prepare_digest(workflow,cfg,native=native,now='2026-11-09T09:00:00+08:00')['state'],'slot_already_prepared')
+        self.assertEqual(prepare_digest(workflow,cfg,native=native,now='2026-11-09T20:00:00+08:00')['state'],'slot_already_prepared')
+        # Control check on the exact same state: without always_send_daily, next day is suppressed.
+        self.assertEqual(prepare_digest(workflow,{'daily_hour':8},native=native,now='2026-11-10T08:00:00+08:00')['state'],'no_material_change')
+        # With always_send_daily enabled, next day's daily digest is prepared and sent once.
         next_day=prepare_digest(workflow,cfg,native=native,now='2026-11-10T08:00:00+08:00')
         self.assertEqual(next_day['state'],'prepared')
         workflow.publish(transport,now='2026-11-10T08:00:00+08:00',kinds={'digest'})
