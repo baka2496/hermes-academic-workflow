@@ -1093,3 +1093,16 @@ class ContactLookupTests(unittest.TestCase):
         self.assertEqual(len(seen),1)
         self.assertEqual(seen[0]['subject'],'檢附歷年成績單')
         self.assertIn('無損合併壓縮為 1 份',ok['text'])
+
+    def test_always_send_daily_sends_next_day_even_without_changes(self):
+        from test_publication import prepared
+        workflow,native,_=prepared();transport=Transport();transport.retry_file=False
+        cfg={'daily_hour':8,'always_send_daily':True}
+        prepare_digest(workflow,cfg,native=native,now='2026-11-09T08:00:00+08:00')
+        workflow.publish(transport,now='2026-11-09T08:00:00+08:00',kinds={'digest'})
+        same_day=prepare_digest(workflow,cfg,native=native,now='2026-11-09T09:00:00+08:00')
+        self.assertEqual(same_day['state'],'slot_already_prepared')
+        next_day=prepare_digest(workflow,cfg,native=native,now='2026-11-10T08:00:00+08:00')
+        self.assertEqual(next_day['state'],'prepared')
+        workflow.publish(transport,now='2026-11-10T08:00:00+08:00',kinds={'digest'})
+        self.assertEqual(len(transport.texts),2)

@@ -201,7 +201,8 @@ def prepare_digest(workflow,config,*,native=None,now=None,force=False):
     parked=[] if not preparation else [x['item_key'] for x in workflow.preparations() if current.get(x['item_key'],{}).get('revision')==x['revision'] and (x['error']=='verification_parked' or native and x['task_id'] and (native.get(x['task_id']) or {}).get('status')=='blocked')]
     fingerprint=digest(dict(agenda=[(x['key'],x['revision'],x['human_state']) for x in current.values()],packages=[x['key'] for x in known_packages],risk=risk,source_health=source_health,parked=parked))
     # Undelivered verified materials are always news, even if the agenda itself did not change.
-    if not packages and fingerprint in {workflow.get_meta('last_digest_fingerprint'),workflow.get_meta('last_attempted_fingerprint')}:return {'state':'no_material_change'}
+    # When always_send_daily is enabled, the regular daily digest (slot == day) still goes out once per day.
+    if not packages and not (config.get('always_send_daily') and slot==day) and fingerprint in {workflow.get_meta('last_digest_fingerprint'),workflow.get_meta('last_attempted_fingerprint')}:return {'state':'no_material_change'}
     # Until one preparation is verified the digest waits, but near deadlines are never held back.
     if preparation and not known_packages and not urgent and not workflow.get_meta('first_preparation_verified'):return {'state':'waiting_first_verified_preparation'}
     overview=export_agenda(workflow,now=now,native=native,preparation=preparation)

@@ -11,6 +11,7 @@
   "collection_minutes": 30,
   "max_active_preparations": 2,
   "daily_hour": 8,
+  "always_send_daily": true,
   "followup_until_hour": 22,
   "max_followups_per_day": 2,
   "digest_items": 5,
