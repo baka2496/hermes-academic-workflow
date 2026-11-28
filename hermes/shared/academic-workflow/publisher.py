@@ -259,7 +259,7 @@ HINTS={
     'interpretation':'公告／信件解析服務連續失敗；請檢查 commander 的模型授權或額度，24 小時後會自動重試。',
     'verification':'產物驗證服務連續失敗；請檢查 commander 的模型授權或額度，24 小時後會自動重試。',
     'worker':'背景準備卡因授權或非暫時性錯誤停住；請檢查 hermes-agent 的模型授權，再於看板解除封鎖。',
-    'gateway':'Hermes 已自動更新，但機器人還在跑舊版，派工等功能會出錯；請在電腦執行 hermes gateway restart。',
+    'gateway':'Hermes 已自動更新，機器人自動重啟 3 次都沒換到新版，派工等功能會出錯；請在電腦執行 hermes gateway restart（不要加 -p）。',
 }
 # A stale gateway breaks features immediately; do not wait the two hours used for flaky sources.
 FAST_ALERT={'gateway':10}
@@ -284,13 +284,55 @@ def health_problems(workflow,*,recovery=(),preparation=True,gateways=()):
     return problems
 
 
-def prepare_health(workflow,config,*,now=None,recovery=(),gateways=None):
+RESTART_TRIES=3
+RESTART_GAP=timedelta(minutes=10)
+
+
+def spawn_gateway_restart(config):
+    """Start "hermes gateway restart" in its own process so it outlives the gateway it stops.
+    No -p and no HERMES_PROFILE: a commander-only restart keeps the old program loaded."""
+    import os,shutil,subprocess
+    env={k:v for k,v in os.environ.items() if k.upper() not in {'HERMES_PROFILE','HERMES_KANBAN_TASK'}}
+    binary=shutil.which('hermes') or str(Path(os.environ.get('LOCALAPPDATA',''))/'Microsoft/WindowsApps/hermes.exe')
+    flags=sum(getattr(subprocess,name,0) for name in ('DETACHED_PROCESS','CREATE_NEW_PROCESS_GROUP','CREATE_NO_WINDOW'))
+    subprocess.Popen([binary,'gateway','restart'],env=env,cwd=str(config.get('hermes_root') or '.'),creationflags=flags,
+        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
+
+
+def restart_stale_gateway(workflow,config,gateways,clock,restart=None):
+    """True while an automatic restart is in progress or may still be tried; False once it gave up.
+
+    11/28: the Store app updated Hermes and the owner got "請在電腦執行 hermes gateway restart" at
+    16:01, then had to ask for it. The gateway lets running agents finish before it stops, so
+    restarting it from here is safe; the owner hears only if three tries ten minutes apart fail."""
+    if config.get('auto_restart_gateway',True) is False or (restart is None and not config.get('hermes_root')):return False
+    key='gateway_restart:'+digest(sorted(gateways))
+    record=workflow.get_meta(key) or {'attempts':0}
+    if record.get('at') and clock-datetime.fromisoformat(record['at'])<RESTART_GAP:return True
+    if record['attempts']>=RESTART_TRIES:return False
+    try:(restart or spawn_gateway_restart)(config);record['error']=None
+    except Exception as exc:record['error']=type(exc).__name__
+    record.update(attempts=record['attempts']+1,at=clock.isoformat(),gateways=sorted(gateways))
+    workflow.set_meta(key,record);workflow.set_meta('gateway_restart_pending',key)
+    return True
+
+
+def prepare_health(workflow,config,*,now=None,recovery=(),gateways=None,restart=None):
     """Queue one Telegram alert when infrastructure stays broken, and one when it recovers."""
     clock=datetime.fromisoformat(iso(now))
     threshold=timedelta(minutes=int(config.get('health_alert_after_minutes',120)))
     if gateways is None:
         from native import stale_gateways
         gateways=stale_gateways() if config.get('hermes_root') and config.get('check_gateway',True) else []
+    if gateways and restart_stale_gateway(workflow,config,gateways,clock,restart):gateways=[]
+    elif not gateways and workflow.get_meta('gateway_restart_pending'):
+        # The automatic restart worked: say so once, in one line, rather than silently.
+        done=workflow.get_meta(workflow.get_meta('gateway_restart_pending')) or {}
+        workflow.delete_meta('gateway_restart_pending')
+        payload=dict(type='health',title='學業工作流狀態',artifacts=[],signature=[],
+            message='🔄 Hermes 更新後，機器人已自動重啟到新版（試了 '+str(done.get('attempts',1))+' 次）。')
+        with workflow.connection() as db:
+            db.execute('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?,?,?)',('health:restarted:'+clock.isoformat(),'','',encoded(payload),'pending',clock.isoformat(),None))
     problems=health_problems(workflow,recovery=recovery,preparation=config.get('preparation_enabled',True) is not False,gateways=gateways)
     since=workflow.meta_items('health_since:')
     for key in since:

@@ -702,8 +702,40 @@ class StaleGatewayTests(unittest.TestCase):
         self.assertEqual(len(stale_gateways(installed=[str(new)],processes=[exe(old)])),1)
         self.assertEqual(len(stale_gateways(installed=[str(new)],processes=[gone])),1)
 
-    def test_stale_gateway_alerts_after_ten_minutes(self):
+    def test_stale_gateway_restarts_itself_and_asks_only_after_three_failed_tries(self):
+        # 11/28: the owner got "請在電腦執行 hermes gateway restart" and had to ask for the restart.
+        workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8};calls=[]
+        restart=lambda c:calls.append(1)
+        health=lambda t,g:prepare_health(workflow,config,now='2026-11-28T'+t+':00+08:00',gateways=g,restart=restart)
+        self.assertEqual(health('16:00',['old'])['problems'],[]);self.assertEqual(len(calls),1)
+        health('16:05',['old']);self.assertEqual(len(calls),1) # waits ten minutes between tries
+        health('16:10',['old']);health('16:20',['old']);self.assertEqual(len(calls),3)
+        health('16:30',['old']);self.assertEqual(len(calls),3) # never more than three
+        self.assertEqual(health('16:40',['old'])['state'],'prepared')
+        transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:40:00+08:00',kinds={'health'})
+        self.assertIn('自動重啟 3 次',transport.texts[0]);self.assertIn('不要加 -p',transport.texts[0])
+
+    def test_a_restart_that_worked_is_reported_once_in_one_line(self):
         workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8}
+        health=lambda t,g:prepare_health(workflow,config,now='2026-11-28T'+t+':00+08:00',gateways=g,restart=lambda c:None)
+        health('16:00',['old']);health('16:05',[])
+        transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:05:00+08:00',kinds={'health'})
+        self.assertEqual(len(transport.texts),1);self.assertIn('已自動重啟到新版',transport.texts[0])
+        health('16:10',[])
+        transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:10:00+08:00',kinds={'health'})
+        self.assertEqual(transport.texts,[])
+
+    def test_restart_command_restarts_every_bot_not_one_profile(self):
+        import publisher,os
+        seen={}
+        class Popen:
+            def __init__(self,args,**kw):seen.update(args=args,env=kw['env'])
+        with patch.dict(os.environ,{'HERMES_PROFILE':'commander'}),patch('subprocess.Popen',Popen):
+            publisher.spawn_gateway_restart({'hermes_root':str(fixture_root())})
+        self.assertEqual(seen['args'][1:],['gateway','restart']);self.assertNotIn('HERMES_PROFILE',seen['env'])
+
+    def test_stale_gateway_alerts_after_ten_minutes_when_auto_restart_is_off(self):
+        workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8,'auto_restart_gateway':False}
         self.assertEqual(prepare_health(workflow,config,now='2026-11-18T17:00:00+08:00',gateways=['old'])['state'],'unchanged')
         self.assertEqual(prepare_health(workflow,config,now='2026-11-18T17:10:00+08:00',gateways=['old'])['state'],'prepared')
         transport=sent_ok();workflow.publish(transport,now='2026-11-18T17:10:00+08:00',kinds={'health'})
