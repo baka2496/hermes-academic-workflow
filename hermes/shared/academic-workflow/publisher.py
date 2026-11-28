@@ -261,6 +261,7 @@ HINTS={
     'worker':'背景準備卡因授權或非暫時性錯誤停住；請檢查 hermes-agent 的模型授權，再於看板解除封鎖。',
     'gateway':'Hermes 已自動更新，機器人自動重啟 3 次都沒換到新版，派工等功能會出錯；請在電腦執行 hermes gateway restart（不要加 -p）。',
 }
+GATEWAY_MANUAL_HINT='Hermes 已自動更新，但機器人還在跑舊版（自動重啟已關閉），派工等功能會出錯；請在電腦執行 hermes gateway restart（不要加 -p）。'
 # A stale gateway breaks features immediately; do not wait the two hours used for flaky sources.
 FAST_ALERT={'gateway':10}
 
@@ -294,7 +295,9 @@ def spawn_gateway_restart(config):
     import os,shutil,subprocess
     env={k:v for k,v in os.environ.items() if k.upper() not in {'HERMES_PROFILE','HERMES_KANBAN_TASK'}}
     binary=shutil.which('hermes') or str(Path(os.environ.get('LOCALAPPDATA',''))/'Microsoft/WindowsApps/hermes.exe')
-    flags=sum(getattr(subprocess,name,0) for name in ('DETACHED_PROCESS','CREATE_NEW_PROCESS_GROUP','CREATE_NO_WINDOW'))
+    # Not DETACHED_PROCESS: Windows then ignores CREATE_NO_WINDOW and a console window can flash on
+    # the owner's desktop. A Windows child keeps running after its parent exits anyway.
+    flags=sum(getattr(subprocess,name,0) for name in ('CREATE_NEW_PROCESS_GROUP','CREATE_NO_WINDOW'))
     subprocess.Popen([binary,'gateway','restart'],env=env,cwd=str(config.get('hermes_root') or '.'),creationflags=flags,
         stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
 
@@ -309,11 +312,15 @@ def restart_stale_gateway(workflow,config,gateways,clock,restart=None):
     key='gateway_restart:'+digest(sorted(gateways))
     record=workflow.get_meta(key) or {'attempts':0}
     if record.get('at') and clock-datetime.fromisoformat(record['at'])<RESTART_GAP:return True
-    if record['attempts']>=RESTART_TRIES:return False
+    if record['attempts']>=RESTART_TRIES:
+        # Given up: a later manual restart must not be reported as an automatic one.
+        workflow.delete_meta('gateway_restart_pending');return False
     try:(restart or spawn_gateway_restart)(config);record['error']=None
     except Exception as exc:record['error']=type(exc).__name__
     record.update(attempts=record['attempts']+1,at=clock.isoformat(),gateways=sorted(gateways))
-    workflow.set_meta(key,record);workflow.set_meta('gateway_restart_pending',key)
+    workflow.set_meta(key,record)
+    # Only a command that actually started may later be credited with fixing it.
+    if record['error'] is None:workflow.set_meta('gateway_restart_pending',key)
     return True
 
 
@@ -326,13 +333,17 @@ def prepare_health(workflow,config,*,now=None,recovery=(),gateways=None,restart=
         gateways=stale_gateways() if config.get('hermes_root') and config.get('check_gateway',True) else []
     if gateways and restart_stale_gateway(workflow,config,gateways,clock,restart):gateways=[]
     elif not gateways and workflow.get_meta('gateway_restart_pending'):
-        # The automatic restart worked: say so once, in one line, rather than silently.
-        done=workflow.get_meta(workflow.get_meta('gateway_restart_pending')) or {}
-        workflow.delete_meta('gateway_restart_pending')
-        payload=dict(type='health',title='學業工作流狀態',artifacts=[],signature=[],
-            message='🔄 Hermes 更新後，機器人已自動重啟到新版（試了 '+str(done.get('attempts',1))+' 次）。')
-        with workflow.connection() as db:
-            db.execute('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?,?,?)',('health:restarted:'+clock.isoformat(),'','',encoded(payload),'pending',clock.isoformat(),None))
+        workflow_pending=workflow.get_meta('gateway_restart_pending');workflow.delete_meta('gateway_restart_pending')
+        # Gateway checks switched off is not evidence that the restart worked.
+        if config.get('check_gateway',True) is not False:
+            done=workflow.get_meta(workflow_pending) or {}
+            key='health:restarted:'+clock.isoformat()
+            payload=dict(type='health',title='學業工作流狀態',artifacts=[],signature=[],
+                message='🔄 Hermes 更新後，機器人已自動重啟到新版（試了 '+str(done.get('attempts',1))+' 次）。')
+            with workflow.connection() as db:
+                db.execute('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?,?,?)',(key,'','',encoded(payload),'pending',clock.isoformat(),None))
+            # The automatic restart worked: said once, in one line; other checks run on the next tick.
+            return {'state':'prepared','key':key,'problems':[]}
     problems=health_problems(workflow,recovery=recovery,preparation=config.get('preparation_enabled',True) is not False,gateways=gateways)
     since=workflow.meta_items('health_since:')
     for key in since:
@@ -350,7 +361,9 @@ def prepare_health(workflow,config,*,now=None,recovery=(),gateways=None,restart=
     attempt=workflow.get_meta('health_attempt') or {}
     if attempt.get('signature')==persistent and clock-datetime.fromisoformat(attempt['at'])<timedelta(hours=6):return {'state':'recently_attempted'}
     lines=['🩺 學業工作流狀態']
-    for name in persistent:lines.append('• '+HINTS[name])
+    # With automatic restart switched off nothing was tried, so do not claim three tries.
+    manual=config.get('auto_restart_gateway',True) is False
+    for name in persistent:lines.append('• '+(GATEWAY_MANUAL_HINT if name=='gateway' and manual else HINTS[name]))
     resolved=[x for x in alerted if x not in persistent]
     if resolved:lines.append('已恢復：'+'、'.join({'tronclass':'TronClass','gmail':'Gmail','interpretation':'解析服務','verification':'驗證服務','worker':'背景準備','gateway':'機器人版本'}.get(x,x) for x in resolved)+'。')
     if not persistent:lines.append('目前所有來源與服務恢復正常。')

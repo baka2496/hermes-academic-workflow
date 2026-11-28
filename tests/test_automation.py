@@ -718,12 +718,23 @@ class StaleGatewayTests(unittest.TestCase):
     def test_a_restart_that_worked_is_reported_once_in_one_line(self):
         workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8}
         health=lambda t,g:prepare_health(workflow,config,now='2026-11-28T'+t+':00+08:00',gateways=g,restart=lambda c:None)
-        health('16:00',['old']);health('16:05',[])
+        health('16:00',['old']);self.assertEqual(health('16:05',[])['state'],'prepared')
         transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:05:00+08:00',kinds={'health'})
         self.assertEqual(len(transport.texts),1);self.assertIn('已自動重啟到新版',transport.texts[0])
         health('16:10',[])
         transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:10:00+08:00',kinds={'health'})
         self.assertEqual(transport.texts,[])
+
+    def test_manual_fix_after_giving_up_or_a_failed_launch_is_not_called_automatic(self):
+        # Review 11/28: the pending mark survived giving up, so a later manual restart read as automatic.
+        for restart in (lambda c:None,lambda c:1/0):
+            workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8}
+            for t in ('16:00','16:10','16:20','16:30','16:40'):
+                prepare_health(workflow,config,now='2026-11-28T'+t+':00+08:00',gateways=['old'],restart=restart)
+            workflow.publish(sent_ok(),now='2026-11-28T16:40:00+08:00',kinds={'health'})
+            prepare_health(workflow,config,now='2026-11-28T17:00:00+08:00',gateways=[],restart=restart)
+            transport=sent_ok();workflow.publish(transport,now='2026-11-28T17:00:00+08:00',kinds={'health'})
+            self.assertFalse(any('自動重啟到新版' in t for t in transport.texts),transport.texts)
 
     def test_restart_command_restarts_every_bot_not_one_profile(self):
         import publisher,os
@@ -740,6 +751,17 @@ class StaleGatewayTests(unittest.TestCase):
         self.assertEqual(prepare_health(workflow,config,now='2026-11-18T17:10:00+08:00',gateways=['old'])['state'],'prepared')
         transport=sent_ok();workflow.publish(transport,now='2026-11-18T17:10:00+08:00',kinds={'health'})
         self.assertIn('hermes gateway restart',transport.texts[0])
+        self.assertNotIn('自動重啟 3 次',transport.texts[0]);self.assertIn('自動重啟已關閉',transport.texts[0])
+
+    def test_restart_window_never_flashes(self):
+        import publisher,os,subprocess
+        seen={}
+        class Popen:
+            def __init__(self,args,**kw):seen.update(kw)
+        with patch('subprocess.Popen',Popen):publisher.spawn_gateway_restart({'hermes_root':str(fixture_root())})
+        if os.name=='nt':
+            self.assertTrue(seen['creationflags']&subprocess.CREATE_NO_WINDOW)
+            self.assertFalse(seen['creationflags']&subprocess.DETACHED_PROCESS)
 
 
 class ReloadTests(unittest.TestCase):
