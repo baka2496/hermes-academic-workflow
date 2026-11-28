@@ -736,6 +736,41 @@ class StaleGatewayTests(unittest.TestCase):
             transport=sent_ok();workflow.publish(transport,now='2026-11-28T17:00:00+08:00',kinds={'health'})
             self.assertFalse(any('自動重啟到新版' in t for t in transport.texts),transport.texts)
 
+    def manual_fix_after(self,launches,config=None):
+        """Run the given restart outcomes ten minutes apart, then the gateway is fixed by hand."""
+        workflow=AcademicWorkflow(fixture_root());config=config or {'daily_hour':8}
+        for n,launch in enumerate(launches):
+            def restart(c,launch=launch):
+                if not launch:raise OSError('hermes not found')
+            prepare_health(workflow,config,now='2026-11-28T16:%02d:00+08:00'%(n*10),gateways=['old'],restart=restart)
+        result=prepare_health(workflow,config,now='2026-11-28T17:00:00+08:00',gateways=[],restart=lambda c:None)
+        transport=sent_ok();workflow.publish(transport,now='2026-11-28T17:00:00+08:00',kinds={'health'})
+        return workflow,result,transport.texts
+
+    def test_a_single_failed_launch_is_not_credited_with_a_manual_fix(self):
+        # Review 11/28 (2nd round): the give-up branch hid this case in the five-try test above.
+        _,_,texts=self.manual_fix_after([False])
+        self.assertFalse(any('自動重啟到新版' in t for t in texts),texts)
+
+    def test_a_failed_launch_after_a_good_one_clears_the_earlier_mark(self):
+        _,_,texts=self.manual_fix_after([True,False])
+        self.assertFalse(any('自動重啟到新版' in t for t in texts),texts)
+        _,_,texts=self.manual_fix_after([True])
+        self.assertTrue(any('自動重啟到新版（試了 1 次）' in t for t in texts),texts) # control: a good launch is credited
+
+    def test_switching_gateway_checks_off_is_not_reported_as_a_restart(self):
+        workflow=AcademicWorkflow(fixture_root());config={'daily_hour':8}
+        prepare_health(workflow,config,now='2026-11-28T16:00:00+08:00',gateways=['old'],restart=lambda c:None)
+        config['check_gateway']=False
+        prepare_health(workflow,config,now='2026-11-28T16:05:00+08:00',gateways=[],restart=lambda c:None)
+        transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:05:00+08:00',kinds={'health'})
+        self.assertFalse(any('自動重啟到新版' in t for t in transport.texts),transport.texts)
+        self.assertIsNone(workflow.get_meta('gateway_restart_pending')) # cleared, so switching back on stays quiet
+        config['check_gateway']=True
+        prepare_health(workflow,config,now='2026-11-28T16:10:00+08:00',gateways=[],restart=lambda c:None)
+        transport=sent_ok();workflow.publish(transport,now='2026-11-28T16:10:00+08:00',kinds={'health'})
+        self.assertEqual(transport.texts,[])
+
     def test_restart_command_restarts_every_bot_not_one_profile(self):
         import publisher,os
         seen={}

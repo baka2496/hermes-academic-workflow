@@ -320,7 +320,9 @@ def restart_stale_gateway(workflow,config,gateways,clock,restart=None):
     record.update(attempts=record['attempts']+1,at=clock.isoformat(),gateways=sorted(gateways))
     workflow.set_meta(key,record)
     # Only a command that actually started may later be credited with fixing it.
+    # A failed launch also clears an earlier mark, so a fix after it is not credited to these tries.
     if record['error'] is None:workflow.set_meta('gateway_restart_pending',key)
+    else:workflow.delete_meta('gateway_restart_pending')
     return True
 
 
